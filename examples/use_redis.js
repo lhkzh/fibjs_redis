@@ -5,13 +5,13 @@ console.log(r.ping());
 r.set("frr","fredisO32哈!、", 1);
 console.log(r.get("frr"));
 coroutine.sleep(1000);
-console.log(r.get("frr"));
+console.log("frr_ttl?",r.get("frr"));
 
 var p = r.pipeOpen();
 p.set("foo","ofof",3);
 p.set("faa","?",2);
 p.mget(["foo","faa"]);
-console.log(p.pipeSubmit());
+console.log("pipe_ret",p.pipeSubmit());
 
 var m = r.multi();
 m.set("fxx", "xxf",1);
@@ -19,13 +19,11 @@ m.set("fzz", "zzf",1);
 m.get("foo");
 m.pttl("faa");
 m.publish("foo","foo!");
-console.log(m.exec());
+console.log("mult_ret", m.exec());
 
 console.log(r.get("foo"));
-
-var a=Buffer.from("compare1");
-var b=Buffer.from("compare2");
-console.log(a.compare(b))
+r.set("bigint",Math.pow(2,61),60);
+console.log(typeof r.get("bigint"))
 
 var s=new Redis();
 s.subscribe("foo",function(r){

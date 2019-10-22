@@ -180,6 +180,7 @@ class Redis {
             operation.fail(e);
         });
     }
+    private temp_cmds=[];
     private send(...args){
         if(this.pipe_caches){
             this.pipe_caches.push(encodeCommand(args));
@@ -192,12 +193,10 @@ class Redis {
                     this.onOpen.wait();//等待重连
                 }
             }
-            try{
-                this.socket.send(encodeCommand(args));
-            }catch (e) {
-                this.on_err(e, true);
-                throw e;
+            if(!this.socket || !this.connected){
+                throw new RedisError("io_error");
             }
+            this.temp_cmds.push(encodeCommand(args));
         }
         return this;
     }
@@ -215,6 +214,14 @@ class Redis {
         }
         var evt=new OptEvent();
         backs.push(evt);
+        try{
+            this.socket.send(this.temp_cmds.length==1?this.temp_cmds[0]:Buffer.concat(this.temp_cmds));
+            this.temp_cmds.length=0;
+        }catch (e) {
+            this.temp_cmds.length=0;
+            this.on_err(e, true);
+            throw e;
+        }
         return evt.wait(convert);
     }
     public command(cmd:string,...args){
