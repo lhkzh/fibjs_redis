@@ -1,0 +1,19 @@
+{
+  "name": "fibjs_redis",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./lib/Redis.js",
+  "types": "./@types/index.d.ts",
+  "private": true,
+  "author": "",
+  "homepage": "https://github.com/lhkzh/fibjs_redis",
+  "license": "ISC",
+  "dependencies": {
+    "redis-errors": "^1.2.0",
+    "redis-parser": "^3.0.0"
+  },
+  "devDependencies": {
+    "@fibjs/types": "^0.28.0"
+  },
+  "peerDependencies": {}
+}

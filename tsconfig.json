@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "es6",
+    "sourceMap": false,
+    "strict": false,
+    "alwaysStrict": true,
+    "watch":false,
+    "outDir": "lib/",
+    "experimentalDecorators":true,
+    "emitDecoratorMetadata":true
+  },
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
+}
