@@ -22,8 +22,10 @@ m.publish("foo","foo!");
 console.log("mult_ret", m.exec());
 
 console.log(r.get("foo"));
-r.set("bigint",Math.pow(2,61),60);
-console.log(typeof r.get("bigint"))
+r.set("bigint",BigInt(Math.pow(2,60)).toString(),120);
+console.log(r.get("bigint"));
+console.log(r.get("bigint", Redis.castBigInt))
+console.log(r.get("bigint", Redis.castNumber))
 
 var s=new Redis();
 s.subscribe("foo",function(r){
