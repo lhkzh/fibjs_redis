@@ -8,7 +8,7 @@ fibjs redis
  2. mult/exec 这个api开启后其他Fiber调用命令也会乱入  
  3. sub系列  开启(p)subscribe后禁用大多数api方法了  
 
-    ` npm -i fibjs_redis `
+ ` npm -i fibjs_redis `
 
 var r = new Redis();  
 console.log(r.ping());  
