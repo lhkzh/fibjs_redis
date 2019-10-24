@@ -1,5 +1,13 @@
 /// <reference types="@fibjs/types" />
-    export class Redis {
+/**
+ * 使用fibjs实现的Redis客户端。
+ * 支持 pipeline、mult/exec、pub/sub、以及redis4.0的api。
+ * 使用注意：以下情况禁止使用公共的Redis对象
+ *   1. block系列api（blpop...）会阻塞
+ *   2. mult/exec 这个api开启后其他Fiber调用命令也会乱入
+ *   3. sub系列  开启(p)subscribe后禁用大多数api方法了
+ */
+export class Redis {
         public bufSize:number;//socket读取数据recv大小，默认255
         public waitReconnect;//发送指令时,如果在重连中是否等待重连，默认true
         //  redis://127.0.0.1:6379   redis://authkey@127.0.0.1:6379?db=1&timeout=3000&autoReconnect=true
@@ -7,7 +15,7 @@
 
         public command(cmd:string,...args):any;
 
-        public pipeOpen():Redis;//开启命令缓存
+        public pipeOpen():Redis;//开启命令缓存-仅针对当前Fiber调用(开启后未提交时不影响其他Fiber使用)
         public pipeSubmit(throwIfHappenErr?:boolean):Array<any>;//提交命令缓存
         public multi():Redis;//开启事物
         public exec():Array<any>;//提交事物

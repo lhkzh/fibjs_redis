@@ -24,8 +24,6 @@ class Redis {
     private killed:boolean;
     private backs:Array<OptEvent>;//request_response_fn
     private mult_backs:Array<Function>;//mult_exec_convert
-    private pipe_caches:Array<Class_Buffer>;//pipeline_command_cache
-    private pipe_casts:Array<Function>;//pipeline_convert
     private subFn:{[index:string]:Array<Function>};//subscribe
     private psubFn:{[index:string]:Array<Function>};//psubscribe
     private sub_backs:Array<OptEvent>;//subscribe_cmd_handler
@@ -182,8 +180,9 @@ class Redis {
     }
     private temp_cmds=[];
     private send(...args){
-        if(this.pipe_caches){
-            this.pipe_caches.push(encodeCommand(args));
+        var pipe = PipeWrap.get();
+        if(pipe){
+            pipe.commands.push(encodeCommand(args));
         }else{
             if(this.killed){
                 throw new RedisError("io_had_closed");
@@ -201,8 +200,9 @@ class Redis {
         return this;
     }
     private wait(convert?){
-        if(this.pipe_caches){
-            this.pipe_casts.push(convert);
+        var pipe = PipeWrap.get();
+        if(pipe){
+            pipe.casts.push(convert);
             return this;
         }
         var backs=this.backs;
@@ -245,9 +245,6 @@ class Redis {
         if(this.sub_backs){
             throw new RedisError("in_subscribe_context");
         }
-        if(this.pipe_caches){
-            throw new RedisError("in_pipeline_context");
-        }
         if(!this.mult_backs){
             this.mult_backs = [];
             try{
@@ -274,36 +271,33 @@ class Redis {
         if(this.mult_backs || this.sub_backs){
             throw new RedisError("in_mult_ctx or in_subscribe_ctx");
         }
-        if(!this.pipe_caches){
-            this.pipe_caches=[];
-            this.pipe_casts=[];
+        if(!PipeWrap.has()){
+            PipeWrap.start();
         }
         return this;
     }
     public pipeSubmit(){
-        var caches=this.pipe_caches;
-        var fns=this.pipe_casts;
-        if(!caches || caches.length==0){
-            this.pipe_caches=null;
-            this.pipe_casts=null;
+        var pipe = PipeWrap.finish();
+        if(this.mult_backs || this.sub_backs){
+            throw new RedisError("in_mult_ctx or in_subscribe_ctx");
+        }
+        if(pipe.commands.length==0){
             return [];
         }
         if(!this.connected && this.opts.autoReconnect && !this.killed){
             this.onOpen.wait();//重连
         }
-        this.pipe_caches=null;
-        this.pipe_casts=null;
-        var pipe_evt = new PipelineOptEvent(fns);
-        fns.forEach(e=>{
-            this.backs.push(pipe_evt);
+        var events = new PipelineOptEvent(pipe.casts);
+        pipe.casts.forEach(e=>{
+            this.backs.push(events);
         });
         try{
-            this.socket.send(Buffer.concat(caches));
+            this.socket.send(Buffer.concat(pipe.commands));
         }catch (e) {
             this.on_err(e, true);
             throw e;
         }
-        return pipe_evt.waitAll(true);
+        return events.waitAll(true);
     }
     public publish(channel:string|Class_Buffer, data:any):number{
         return this.send(CmdPublish, channel, data).wait(castNumber);
@@ -798,7 +792,7 @@ class Redis {
             if(this.mult_backs){
                 throw new RedisError("in_mult_exec");
             }
-            if(this.pipe_caches){
+            if(PipeWrap.has()){
                 throw new RedisError("in_pipeline_ctx");
             }
             if(this.backs.length>0){
@@ -877,6 +871,31 @@ class Redis {
     }
 }
 module.exports=Redis;
+class PipeWrap {
+    //请求命令缓存
+    public commands:Array<Class_Buffer>=[];//pipeline_command_cache
+    //响应处理缓存
+    public casts:Array<Function>=[];//pipeline_convert
+
+    public static has(){
+        return coroutine.current()[PipeWrap.KEY]!=null;
+    }
+    public static start(){
+        if(!coroutine.current()[PipeWrap.KEY]){
+            coroutine.current()[PipeWrap.KEY]=new PipeWrap();
+        }
+        return coroutine.current()[PipeWrap.KEY];
+    }
+    public static get():PipeWrap{
+        return coroutine.current()[PipeWrap.KEY];
+    }
+    public static finish():PipeWrap{
+        var v = coroutine.current()[PipeWrap.KEY];
+        delete coroutine.current()[PipeWrap.KEY];
+        return v;
+    }
+    public static KEY = Symbol("redis_pipe");
+}
 class OptEvent{
     protected evt:Class_Event;
     protected data;
