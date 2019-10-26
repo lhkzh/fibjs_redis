@@ -365,11 +365,11 @@ class Redis {
         return this.send(CmdSet,key,val,CmdOptEX,ttl,CmdOptXX).wait(castBool);
     }
     public mset(...kvs):boolean{
-        kvs=kvs.length==1?toArray(kvs,[]):kvs;
+        kvs=kvs.length==1?toArray(kvs[0],[]):kvs;
         return this.send(CmdMSet, ...kvs).wait(castBool);
     }
     public msetNX(...kvs):boolean{
-        kvs=kvs.length==1?toArray(kvs,[]):kvs;
+        kvs=kvs.length==1?toArray(kvs[0],[]):kvs;
         return this.send(CmdMSetNX, ...kvs).wait(castBool);
     }
     public append(key:string|Class_Buffer, val:string|Class_Buffer):boolean{
@@ -381,17 +381,25 @@ class Redis {
     public getRange(key:string|Class_Buffer, start:number, end:number, castFn=castStr):string{
         return this.send(CmdGetRange, key, start, end).wait(castFn);
     }
+    public substr(key:string|Class_Buffer, start:number, end:number, castFn=castStr):string|Class_Buffer{
+        return this.send(CmdSubstr, key, start, end).wait(castFn);
+    }
     public strlen(key:string|Class_Buffer):number{
         return this.send(CmdStrlen, key).wait(castNumber);
-    }
-    public bitcount(key:string|Class_Buffer):number{
-        return this.send(CmdBitcount, key).wait(castNumber);
     }
     public get(key:string|Class_Buffer, castFn=castStr){
         return this.send(CmdGet, key).wait(castFn);
     }
     public mget(keys:string[], castFn=castStrs){
         return this.send(CmdMGet, ...keys).wait(castFn);
+    }
+    public mgetWrap(keys:string[], castFn=castStrs){
+        var a=this.send(CmdMGet, ...keys).wait(castFn);
+        var r={};
+        for(var i=0;i<keys.length;i++){
+            r[keys[i].toString()] = a[i];
+        }
+        return r;
     }
     public getSet(key:string|Class_Buffer, val:any, castFn=castStr){
         return this.send(CmdGetSet, key, val).wait(castFn);
@@ -408,6 +416,18 @@ class Redis {
     public decrBy(key:string|Class_Buffer, step:number, castFn=castNumber){
         return this.send(CmdDecrBy,key,step).wait(castFn);
     }
+    public bitCount(key:string|Class_Buffer):number{
+        return this.send(CmdBitcount, key).wait(castNumber);
+    }
+    public bitPos(key:string|Class_Buffer, start:number, end?:number):number{
+        if(arguments.length>2){
+            return this.send(CmdBitpos, key, start, end).wait(castNumber);
+        }
+        return this.send(CmdBitpos, key, start).wait(castNumber);
+    }
+    public bitOp(option:'AND'|'OR'|'NOT'|'XOR', destkey:string|Class_Buffer, ...keys):number{
+        return this.send(CmdBitop, ...arguments).wait(castNumber);
+    }
     public setBit(key:string|Class_Buffer, offset:number, val:number):boolean{
         return this.send(CmdSetbit, key, offset, val).wait(castBool);
     }
@@ -423,7 +443,7 @@ class Redis {
         if(Number.isInteger(matchCount)){
             args.push('COUNT',matchCount);
         }
-        var a = this.send(parse,cmd,...args).wait();
+        var a = this.send(...args).wait();
         a[0]=Number(a[0].toString());
         a[1]=parse(a[1]);
         if(cmd=='hscan'||cmd=='zscan'){
@@ -503,11 +523,11 @@ class Redis {
     }
 
 
-    public lPush(key:string|Class_Buffer, val:any):number{
-        return this.send(CmdLpush, key, val).wait(castNumber);
+    public lPush(key:string|Class_Buffer, ...vals):number{
+        return this.send(CmdLpush, key, ...vals).wait(castNumber);
     }
-    public rPush(key:string|Class_Buffer, val:any):number{
-        return this.send(CmdRpush, key, val).wait(castNumber);
+    public rPush(key:string|Class_Buffer, ...vals):number{
+        return this.send(CmdRpush, key, ...vals).wait(castNumber);
     }
     public lPushx(key:string|Class_Buffer, val:any):number{
         return this.send(CmdLpushx, key, val).wait(castNumber);
@@ -558,18 +578,80 @@ class Redis {
         return this.send(CmdRpopLpush, srcKey, destKey).wait(castFn);
     }
 
+    public hSet(key:string|Class_Buffer, field:string|Class_Buffer, val:any ){
+        return this.send(CmdHSet, key, field, val).wait(castNumber);
+    }
+    public hSetNx(key:string|Class_Buffer, field:string|Class_Buffer, val:any ){
+        return this.send(CmdHSetNx, key, field, val).wait(castNumber);
+    }
+    public hGet(key:string|Class_Buffer, field:string|Class_Buffer, castFn=castStr ){
+        return this.send(CmdHGet, key, field).wait(castFn);
+    }
+    public hLen(key:string|Class_Buffer){
+        return this.send(CmdHLen, key).wait(castNumber);
+    }
+    public hDel(key:string|Class_Buffer, ...fields){
+        return this.send(CmdHdel, ...fields).wait(castNumber);
+    }
+    public hKeys(key:string|Class_Buffer, castFn=castStrs){
+        return this.send(CmdHKeys, key).wait(castFn);
+    }
+    public hVals(key:string|Class_Buffer, castFn=castStrs){
+        return this.send(CmdHVals, key).wait(castFn);
+    }
+    public hGetAll(key:string|Class_Buffer, castFn=castStrs){
+        return this.send(CmdHGetAll, key).wait(castFn);
+    }
+    public hGetAllWrap(key:string|Class_Buffer, castFn=castStrs){
+        var a = this.send(CmdHGetAll, key).wait(castFn);
+        var r = {};
+        for(var i=0;i<a.length;i+=2){
+            r[a[i].toString()] = a[i+1];
+        }
+        return r;
+    }
+    public hExists(key:string|Class_Buffer, field:string|Class_Buffer):boolean{
+        return this.send(CmdHExists, key, field).wait(castBool);
+    }
+    public hIncrBy(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}, castFn=castNumber):any{
+        return this.send(CmdHIncrBy, key, field, val).wait(castFn);
+    }
+    public hIncrByFloat(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}):any{
+        return this.send(CmdHIncrByFloat, key, field, val).wait(castNumber);
+    }
+    public hMset(key:string|Class_Buffer, hashObj:{[index:string]:any}){
+        var args = [CmdHMset, key];
+        for(var k in hashObj){
+            args.push(k, hashObj[k]);
+        }
+        return this.send(...args).wait(castBool);
+    }
+    public hMGet(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn=castStrs){
+        if(!fields || fields.length<1)return [];
+        return this.send(CmdHMget, key, ...fields).wait(castFn);
+    }
+    public hMGetWrap(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn=castStrs){
+        if(!fields || fields.length<1)return [];
+        var a = this.send(CmdHMget, key, ...fields).wait(castFn);
+        var r = {};
+        for(var i=0;i<fields.length;i++){
+            r[fields[i].toString()] = a[i];
+        }
+        return r;
+    }
+
     public sAdd(key:string|Class_Buffer, ...members):number{
         if(members.length==1 && util.isArray(members[0])){
             members=members[0];
         }
-        members.unshift(CmdSadd, key, members);
+        members.unshift(CmdSadd, key);
         return this.send(...members).wait(castNumber);
     }
     public sRem(key:string|Class_Buffer, ...members):number{
         if(members.length==1 && util.isArray(members[0])){
             members=members[0];
         }
-        members.unshift(CmdSrem, key, members);
+        members.unshift(CmdSrem, key);
         return this.send(...members).wait(castNumber);
     }
     public sCard(key:string|Class_Buffer):number{
@@ -1104,6 +1186,11 @@ const CmdMSetNX=Buffer.from('msetnx');
 const CmdMSet=Buffer.from('mset');
 const CmdAppend=Buffer.from('append');
 const CmdBitcount=Buffer.from('bitcount');
+const CmdBitpos=Buffer.from('bitpos');
+const CmdBitop=Buffer.from('bitop');
+const CmdGetbit=Buffer.from('getbit');
+const CmdSetbit=Buffer.from('setbit');
+const CmdSubstr=Buffer.from('substr');
 const CmdStrlen=Buffer.from('strlen');
 const CmdSetRange=Buffer.from('setrange');
 const CmdGetRange=Buffer.from('getrange');
@@ -1113,8 +1200,6 @@ const CmdDecr=Buffer.from('decr');
 const CmdIncr=Buffer.from('incr');
 const CmdDecrBy=Buffer.from('decrby');
 const CmdIncrBy=Buffer.from('incrby');
-const CmdSetbit=Buffer.from('setbit');
-const CmdGetbit=Buffer.from('getbit');
 
 const CmdLpush=Buffer.from('lpush');
 const CmdLpushx=Buffer.from('lpushx');
@@ -1133,6 +1218,21 @@ const CmdBlpop=Buffer.from('blpop');
 const CmdBrpop=Buffer.from('brpop');
 const CmdBrpopLpush=Buffer.from('bropolpush');
 const CmdRpopLpush=Buffer.from('rpoplpush');
+
+const CmdHSet=Buffer.from('hset');
+const CmdHSetNx=Buffer.from('hsetnx');
+const CmdHGet=Buffer.from('hget');
+const CmdHLen=Buffer.from('hlen');
+const CmdHdel=Buffer.from('hdel');
+const CmdHKeys=Buffer.from('hkeys');
+const CmdHVals=Buffer.from('hvals');
+const CmdHGetAll=Buffer.from('hGetAll');
+const CmdHExists=Buffer.from('hExists');
+const CmdHIncrBy=Buffer.from('hIncrBy');
+const CmdHIncrByFloat=Buffer.from('hIncrByFloat');
+const CmdHMget=Buffer.from('hmget');
+const CmdHMset=Buffer.from('hmset');
+
 
 const CmdSadd=Buffer.from('sadd');
 const CmdSrem=Buffer.from('srem');

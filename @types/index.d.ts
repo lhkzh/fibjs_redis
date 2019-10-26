@@ -9,7 +9,7 @@
  */
 export class Redis {
         public bufSize:number;//socket读取数据recv大小，默认255
-        public waitReconnect;//发送指令时,如果在重连中是否等待重连，默认true
+        public waitReconnect:boolean;//发送指令时,如果在重连中是否等待重连，默认true
         //  redis://127.0.0.1:6379   redis://authkey@127.0.0.1:6379?db=1&timeout=3000&autoReconnect=true
         constructor(url:string/*="redis://127.0.0.1:6379"*/, autoReconnect?:boolean/*=true*/);
 
@@ -53,10 +53,11 @@ export class Redis {
         public setRange(key:string|Class_Buffer, offset:number, val:any):boolean;
         public getRange(key:string|Class_Buffer, start:number, end:number, parseFn?:Function):string|Class_Buffer;
 
+        public substr(key:string|Class_Buffer, parseFn?:Function):string|Class_Buffer;
         public strlen(key:string|Class_Buffer):number;
-        public bitcount(key:string|Class_Buffer):number;
         public get(key:string|Class_Buffer, parseFn?:Function):string|number|Class_Buffer|null;
-        public mget(keys:Array<string>, parseFn?:Function):Array<string>;
+        public mget(keys:Array<string>, parseFn?:Function):Array<string|number|Class_Buffer|null>;
+        public mgetWrap(keys:Array<string>, parseFn?:Function):{[index:string]:string|number|Class_Buffer|null};
         public getSet(key:string|Class_Buffer, val:any, parseFn?:Function):string|number|Class_Buffer|null;
 
         public incr(key:string|Class_Buffer, parseFn?:Function):any;
@@ -64,6 +65,9 @@ export class Redis {
         public incrBy(key:string|Class_Buffer, step:number, parseFn?:Function):any;
         public decrBy(key:string|Class_Buffer, step:number, parseFn?:Function):any;
 
+        public bitCount(key:string|Class_Buffer):number;
+        public bitPos(key:string|Class_Buffer, start:number, end?:number):number;
+        public bitOp(option:'AND'|'OR'|'NOT'|'XOR', destkey:string|Class_Buffer, ...keys):number;
         public setBit(key:string|Class_Buffer, offset:number, val:number):boolean;
         public getBit(key:string|Class_Buffer, offset:number):number;
 
@@ -79,8 +83,8 @@ export class Redis {
         public georadius(key:string|Class_Buffer, longitude:string|number, latitude:string|number, radius:string|number, unit:string, withOpts?:Array<string>):Array<any>;
         public georadiusbymember(key:string|Class_Buffer, member:any, radius:string|number, unit:string):Array<string>;
 
-        public lPush(key:string|Class_Buffer, val:any):number;
-        public rPush(key:string|Class_Buffer, val:any):number;
+        public lPush(key:string|Class_Buffer, ...vals):number;
+        public rPush(key:string|Class_Buffer, ...vals):number;
         public lPushx(key:string|Class_Buffer, val:any):number;
         public rPushx(key:string|Class_Buffer, val:any):number;
         public lLen(key:string|Class_Buffer):number;
@@ -96,6 +100,22 @@ export class Redis {
         public bRpop(key:any, timeout:number, parseFn?:Function):string|number|Class_Buffer|null;
         public bRpopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, timeout:number, parseFn?:Function):string|number|Class_Buffer|null;
         public rPopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, parseFn?:Function):string|number|Class_Buffer|null;
+
+        public hSet(key:string|Class_Buffer, field:string|Class_Buffer, val:any ):number;
+        public hSetNx(key:string|Class_Buffer, field:string|Class_Buffer, val:any ):number;
+        public hGet(key:string|Class_Buffer, field:string|Class_Buffer, parseFn?:Function):string|number|Class_Buffer|null;
+        public hLen(key:string|Class_Buffer):number;
+        public hDel(key:string|Class_Buffer, ...fields):number;
+        public hKeys(key:string|Class_Buffer, parseFn?:Function):Array<string|number|Class_Buffer|null>
+        public hVals(key:string|Class_Buffer, parseFn?:Function):Array<string|number|Class_Buffer|null>
+        public hGetAll(key:string|Class_Buffer, parseFn?:Function):Array<string|number|Class_Buffer|null>;
+        public hGetAllWrap(key:string|Class_Buffer, parseFn?:Function):{[index:string]:string|number|Class_Buffer|null};
+        public hExists(key:string|Class_Buffer, field:string|Class_Buffer):boolean;
+        public hIncrBy(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}, parseFn?:Function):any;//number string BigInt
+        public hIncrByFloat(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string):number;
+        public hMset(key:string|Class_Buffer, hashObj:{[index:string]:any}):boolean;
+        public hMGet(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, parseFn?:Function):Array<string|number|Class_Buffer|null>;
+        public hMGetWrap(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, parseFn?:Function):{[index:string]:string|number|Class_Buffer|null};
 
         public sAdd(key:string|Class_Buffer, ...members):number;
         public sRem(key:string|Class_Buffer, ...members):number;
