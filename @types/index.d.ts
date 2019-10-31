@@ -24,12 +24,19 @@ export class Redis {
         public unwatch():boolean;
         public auth(requirepass:string):boolean;
         public select(db:number):boolean;
+        public echo(s:string):string;
+        public swapdb(dbA:number, dbB:number):boolean;
         public ping():boolean;
         public publish(channel:string|Class_Buffer, data:string|number|Class_Buffer):number;
 
         public exists(key:string|Class_Buffer):boolean;
         public type(key:string|Class_Buffer):string;
         public keys(pattern:string|Class_Buffer):Array<string>;
+
+        public randomKey():string;
+        public touch(...keys):number;
+        public move(key:string|Class_Buffer, toDb:number):number;
+        public dump(key:string|Class_Buffer):string;
         public rename(key:string|Class_Buffer,newkey:string|Class_Buffer):boolean;
         public renameNX(key:string|Class_Buffer,newkey:string|Class_Buffer):boolean;
 
@@ -154,8 +161,12 @@ export class Redis {
         public zRangeByScore(key:string|Class_Buffer, min:number, max:number, opts?:{withScore?:boolean, limit?:{offset:number,count:number}}/*={withScore:false}*/, castFn?:Function):Array<any>;
         public zRevRangeByScore(key:string|Class_Buffer, min:number, max:number, opts?:{withScore?:boolean, limit?:{offset:number,count:number}}/*={withScore:false}*/, castFn?:Function):Array<any>;
 
-        public bzPopMin(key:any, timeout?:number/*=0*/, castFn?:Function):string|number|Class_Buffer|null;
-        public bzPopMax(key:any, timeout?:number/*=0*/, castFn?:Function):string|number|Class_Buffer|null;
+        public bzPopMin(key:string|Class_Buffer, timeout?:number/*=0*/, castFn?:Function):string|number|Class_Buffer|null;
+        public bzPopMax(key:string|Class_Buffer, timeout?:number/*=0*/, castFn?:Function):string|number|Class_Buffer|null;
+
+        public pfAdd(key:string|Class_Buffer, ...elements):number;
+        public pfCount(key:string|Class_Buffer):number;
+        public pfMerge(destKey:string|Class_Buffer, ...sourceKeys):boolean;
 
         public subscribe(key:string|string[], fn:(msg:Class_Buffer, channel?:string)=>void);
         public psubscribe(key:string|string[], fn:(msg:Class_Buffer, channel?:string)=>void);
@@ -171,4 +182,4 @@ export class Redis {
         public static castNumbers:Function;
         public static castBigInt:Function;
         public static castAuto:Function;
-    }
+}

@@ -231,8 +231,14 @@ class Redis {
     public ping():string{
         return this.send(CmdPing).wait(castStr);
     }
+    public echo(s:string):string{
+        return this.send(CmdEcho, s).wait(castStr);
+    }
+    public swapdb(a:number, b:number):boolean{
+        return this.send(CmdSwapdb, a, b).wait(castBool);
+    }
     public select(db:number):boolean{
-        return this.send(CmdSelect).wait(castBool);
+        return this.send(CmdSelect, db).wait(castBool);
     }
     public watch(...keys){
         keys=util.isArray(keys[0])?keys[0]:keys;
@@ -302,20 +308,32 @@ class Redis {
     public publish(channel:string|Class_Buffer, data:any):number{
         return this.send(CmdPublish, channel, data).wait(castNumber);
     }
+    public keys(pattern:string|Class_Buffer):string[]{
+        return this.send(CmdKeys, pattern).wait(castStrs);
+    }
     public exists(key:string|Class_Buffer):boolean{
         return this.send(CmdExists, key).wait(castBool);
     }
     public type(key:string|Class_Buffer):string{
         return this.send(CmdType, key).wait(castStr);
     }
-    public keys(pattern:string|Class_Buffer):string[]{
-        return this.send(CmdKeys, pattern).wait(castStrs);
-    }
     public rename(key:string|Class_Buffer,newkey:string|Class_Buffer):boolean{
         return this.send(CmdRename,key,newkey).wait(castBool);
     }
     public renameNX(key:string|Class_Buffer,newkey:string|Class_Buffer):boolean{
         return this.send(CmdRenameNX,key,newkey).wait(castBool);
+    }
+    public dump(key:string|Class_Buffer):string{
+        return this.send(CmdDump, key).wait(castStr);
+    }
+    public touch(...keys):number{
+        return this.send(CmdTouch, keys).wait(castNumber);
+    }
+    public move(key:string|Class_Buffer, toDb:number):number{
+        return this.send(CmdMove, key, toDb).wait(castNumber);
+    }
+    public randomKey():string{
+        return this.send(CmdRandomkey).wait(castStr);
     }
     public del(...keys):number{
         keys=util.isArray(keys[0])?keys[0]:keys;
@@ -781,7 +799,7 @@ class Redis {
         }
         return this.z_act(castFn, opts.withScore?-1:0, args);
     }
-    public bzPopMin(key:any, timeout:number=0, castFn=castStr){
+    public bzPopMin(key:string|Class_Buffer, timeout:number=0, castFn=castStr){
         var args = Array.isArray(key) ? [CmdBzPopMin, ...key, timeout]:[CmdBzPopMin, key, timeout];
         var r=this.send(...args).wait();
         r[0]=r[0].toString();
@@ -789,7 +807,7 @@ class Redis {
         r[2]=castFn(r[2]);
         return r;
     }
-    public bzPopMax(key:any, timeout:number=0, castFn=castStr){
+    public bzPopMax(key:string|Class_Buffer, timeout:number=0, castFn=castStr){
         var args = Array.isArray(key) ? [CmdBzPopMax, ...key, timeout]:[CmdBzPopMax, key, timeout];
         var r=this.send(...args).wait();
         r[0]=r[0].toString();
@@ -798,6 +816,15 @@ class Redis {
         return r;
     }
 
+    public pfAdd(key:string|Class_Buffer, ...elements){
+        return this.send(CmdPfadd, key, ...elements).wait(castNumber);
+    }
+    public pfCount(key:string|Class_Buffer){
+        return this.send(CmdPfcount, key).wait(castNumber);
+    }
+    public pfMerge(destKey:string|Class_Buffer, ...sourceKeys){
+        return this.send(CmdPfcount, destKey, ...sourceKeys).wait(castBool);
+    }
 
     private real_sub(cmd, key:string, fn:Function, isSubscribe?:boolean){
         this.pre_sub();
@@ -1152,6 +1179,13 @@ function encodeOneResp(command:Array<any>):Class_Buffer {
     ]);
 }
 
+const CmdDump=Buffer.from('dump');
+const CmdTouch=Buffer.from('touch');
+const CmdMove=Buffer.from('move');
+const CmdRandomkey=Buffer.from('randomkey');
+const CmdRename=Buffer.from('rename');
+const CmdRenameNX=Buffer.from('renamenx');
+
 const CmdSubscribe=Buffer.from('subscribe');
 const CmdPSubscribe=Buffer.from('psubscribe');
 const CmdUnSubscribe=Buffer.from('unsubscribe');
@@ -1161,6 +1195,8 @@ const CmdPMessage=Buffer.from('pmessage');
 const CmdPong=Buffer.from('pong');
 const CmdQuit=Buffer.from('quit');
 const CmdPing=Buffer.from('ping');
+const CmdEcho=Buffer.from('echo');
+const CmdSwapdb=Buffer.from('swapdb');
 const CmdAuth=Buffer.from('auth');
 const CmdSelect=Buffer.from('select');
 const CmdPublish=Buffer.from('publish');
@@ -1169,8 +1205,6 @@ const CmdKeys=Buffer.from('keys');
 const CmdType=Buffer.from('type');
 const CmdDel=Buffer.from('del');
 const CmdUnlink=Buffer.from('unlink');
-const CmdRename=Buffer.from('rename');
-const CmdRenameNX=Buffer.from('renamenx');
 const CmdPexpire=Buffer.from('pexpire');
 const CmdExpire=Buffer.from('expire');
 const CmdPttl=Buffer.from('pttl');
@@ -1275,3 +1309,7 @@ const CmdWatch=Buffer.from('watch');
 const CmdUnWatch=Buffer.from('unwatch');
 const CmdMulti=Buffer.from('multi');
 const CmdExec=Buffer.from('exec');
+
+const CmdPfcount=Buffer.from('pfcount');
+const CmdPfadd=Buffer.from('pfadd');
+const CmdPfmerge=Buffer.from('pfmerge');
