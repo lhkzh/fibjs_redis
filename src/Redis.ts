@@ -224,12 +224,17 @@ class Redis {
         }
         return evt.wait(convert);
     }
-    public command(cmd:string,...args){
+    public rawCommand(cmd:string,...args){
         // console.log("...>",cmd,...args);
         return this.send(...arguments).wait();
     }
     public ping():string{
         return this.send(CmdPing).wait(castStr);
+    }
+    public quit():boolean{
+        var r = this.send(CmdQuit).wait(castBool);
+        this.close();
+        return r;
     }
     public echo(s:string):string{
         return this.send(CmdEcho, s).wait(castStr);
@@ -239,6 +244,28 @@ class Redis {
     }
     public select(db:number):boolean{
         return this.send(CmdSelect, db).wait(castBool);
+    }
+    public info(option?:string){
+        var args = option&&option.length>0 ? [CmdInfo, option]:[CmdInfo];
+        return this.send(...args).wait(castStr);
+    }
+    public client(subCommand:string){
+        return this.send(CmdClient, subCommand).wait(castStr);
+    }
+    public time(){
+        return this.send(CmdTime).wait(castNumbers);
+    }
+    public slowlog(subCommand, ...subArgs){
+        return this.send(CmdSlowlog, ...arguments).wait(deepCastStrs);
+    }
+    public slowlogLen(){
+        return this.slowlog("len");
+    }
+    public slowlogGet(n:number){
+        return this.slowlog("get",n);
+    }
+    public config(subCommand, ...subArgs){
+        return this.send(CmdConfig, ...arguments).wait(deepCastStrs);
     }
     public watch(...keys){
         keys=util.isArray(keys[0])?keys[0]:keys;
@@ -327,6 +354,7 @@ class Redis {
         return this.send(CmdDump, key).wait(castStr);
     }
     public touch(...keys):number{
+        keys=util.isArray(keys[0])?keys[0]:keys;
         return this.send(CmdTouch, ...keys).wait(castNumber);
     }
     public move(key:string|Class_Buffer, toDb:number):number{
@@ -609,6 +637,7 @@ class Redis {
         return this.send(CmdHLen, key).wait(castNumber);
     }
     public hDel(key:string|Class_Buffer, ...fields){
+        fields=util.isArray(fields[0])?fields[0]:fields;
         return this.send(CmdHdel, ...fields).wait(castNumber);
     }
     public hKeys(key:string|Class_Buffer, castFn=castStrs){
@@ -659,18 +688,12 @@ class Redis {
     }
 
     public sAdd(key:string|Class_Buffer, ...members):number{
-        if(members.length==1 && util.isArray(members[0])){
-            members=members[0];
-        }
-        members.unshift(CmdSadd, key);
-        return this.send(...members).wait(castNumber);
+        members=util.isArray(members[0])?members[0]:members;
+        return this.send(CmdSadd, key, ...members).wait(castNumber);
     }
     public sRem(key:string|Class_Buffer, ...members):number{
-        if(members.length==1 && util.isArray(members[0])){
-            members=members[0];
-        }
-        members.unshift(CmdSrem, key);
-        return this.send(...members).wait(castNumber);
+        members=util.isArray(members[0])?members[0]:members;
+        return this.send(CmdSrem, key, ...members).wait(castNumber);
     }
     public sCard(key:string|Class_Buffer):number{
         return this.send(CmdScard, key).wait(castNumber);
@@ -817,13 +840,15 @@ class Redis {
     }
 
     public pfAdd(key:string|Class_Buffer, ...elements){
+        elements=util.isArray(elements[0])?elements[0]:elements;
         return this.send(CmdPfadd, key, ...elements).wait(castNumber);
     }
     public pfCount(key:string|Class_Buffer){
         return this.send(CmdPfcount, key).wait(castNumber);
     }
     public pfMerge(destKey:string|Class_Buffer, ...sourceKeys){
-        return this.send(CmdPfcount, destKey, ...sourceKeys).wait(castBool);
+        sourceKeys=util.isArray(sourceKeys[0])?sourceKeys[0]:sourceKeys;
+        return this.send(CmdPfmerge, destKey, ...sourceKeys).wait(castBool);
     }
 
     private real_sub(cmd, key:string, fn:Function, isSubscribe?:boolean){
@@ -1095,6 +1120,18 @@ function castStrs(bufs) {
     });
     return bufs;
 }
+function deepCastStrs(r:Array<any>){
+    if(util.isArray(r)){
+        r.forEach((v,k,a)=>{
+            if(util.isBuffer(v)){
+                a[k] = v.toString();
+            }else if(util.isArray(v)){
+                a[k] = deepCastStrs(v);
+            }
+        })
+    }
+    return r;
+}
 function castNumber(buf:any) {
     if(buf){
         if(!util.isNumber(buf)){
@@ -1109,16 +1146,15 @@ function castBigInt(buf:any) {
     }
     return buf;
 }
-function castNumbers(bufs){
-    bufs.forEach((v,k,a)=>{
-        if(v!=null){
-            var n=Number(v.toString());
-            if(isNaN(n)){
-                v=v.toString();
-            }
-            a[k]=v;
+function castNumbers(bufs) {
+    bufs.forEach((v, k, a) => {
+        if (v != null) {
+            var s=v.toString();
+            var n = Number(s);
+            a[k] = isNaN(n) ? s:n;
         }
     });
+    return bufs;
 }
 function castAuto(a:any):any{
     if(a==null)return a;
@@ -1313,3 +1349,11 @@ const CmdExec=Buffer.from('exec');
 const CmdPfcount=Buffer.from('pfcount');
 const CmdPfadd=Buffer.from('pfadd');
 const CmdPfmerge=Buffer.from('pfmerge');
+
+const CmdTime=Buffer.from('time');
+const CmdInfo=Buffer.from('info');
+const CmdClient=Buffer.from('client');
+const CmdSlowlog=Buffer.from('slowlog');
+const CmdConfig=Buffer.from('config');
+// const CmdShutdown=Buffer.from('shutdown');
+// const CmdBgsave=Buffer.from('bgsave');
