@@ -327,7 +327,7 @@ class Redis {
         return this.send(CmdDump, key).wait(castStr);
     }
     public touch(...keys):number{
-        return this.send(CmdTouch, keys).wait(castNumber);
+        return this.send(CmdTouch, ...keys).wait(castNumber);
     }
     public move(key:string|Class_Buffer, toDb:number):number{
         return this.send(CmdMove, key, toDb).wait(castNumber);
