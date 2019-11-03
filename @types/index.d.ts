@@ -13,6 +13,8 @@ export class Redis {
         //  redis://127.0.0.1:6379   redis://authkey@127.0.0.1:6379?db=1&timeout=3000&autoReconnect=true
         constructor(url:string/*="redis://127.0.0.1:6379"*/, autoReconnect?:boolean/*=true*/);
 
+        public prefix:string;//get set
+
         public rawCommand(cmd:string,...args):any;
 
         public pipeOpen():Redis;//开启命令缓存-仅针对当前Fiber调用(开启后未提交时不影响其他Fiber使用)
@@ -110,8 +112,8 @@ export class Redis {
         public lRem(key:string|Class_Buffer, count:number, val:any):number;
         public lTrim(key:string|Class_Buffer, start:number, stop:number):boolean;
         public lRange(key:string|Class_Buffer, start:number, stop:number, parseFn?:Function):Array<string|number|Class_Buffer|null>;
-        public bLpop(key:any, timeout:number, parseFn?:Function):string|number|Class_Buffer|null;
-        public bRpop(key:any, timeout:number, parseFn?:Function):string|number|Class_Buffer|null;
+        public bLpop(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number, parseFn?:Function):string|number|Class_Buffer|null;
+        public bRpop(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number, parseFn?:Function):string|number|Class_Buffer|null;
         public bRpopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, timeout:number, parseFn?:Function):string|number|Class_Buffer|null;
         public rPopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, parseFn?:Function):string|number|Class_Buffer|null;
 
@@ -168,8 +170,8 @@ export class Redis {
         public zRangeByScore(key:string|Class_Buffer, min:number, max:number, opts?:{withScore?:boolean, limit?:{offset:number,count:number}}/*={withScore:false}*/, castFn?:Function):Array<any>;
         public zRevRangeByScore(key:string|Class_Buffer, min:number, max:number, opts?:{withScore?:boolean, limit?:{offset:number,count:number}}/*={withScore:false}*/, castFn?:Function):Array<any>;
 
-        public bzPopMin(key:string|Class_Buffer, timeout?:number/*=0*/, castFn?:Function):string|number|Class_Buffer|null;
-        public bzPopMax(key:string|Class_Buffer, timeout?:number/*=0*/, castFn?:Function):string|number|Class_Buffer|null;
+        public bzPopMin(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout?:number/*=0*/, castFn?:Function):string|number|Class_Buffer|null;
+        public bzPopMax(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout?:number/*=0*/, castFn?:Function):string|number|Class_Buffer|null;
 
         public pfAdd(key:string|Class_Buffer, ...elements):number;
         public pfCount(key:string|Class_Buffer):number;

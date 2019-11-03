@@ -15,18 +15,19 @@ import util=require('util');
 class Redis {
     public bufSize=255;//socket读取数据recv大小
     public waitReconnect=true;//发送指令时,如果在重连中是否等待重连
-    private opts:{db:number, timeout:number, host:string,port:number,auth:string,autoReconnect:boolean};
-    private parser;
-    private reader:Class_Fiber;
-    private socket:Class_Socket;
-    private onOpen:Class_Event;
-    private connected:boolean;
-    private killed:boolean;
-    private backs:Array<OptEvent>;//request_response_fn
-    private mult_backs:Array<Function>;//mult_exec_convert
-    private subFn:{[index:string]:Array<Function>};//subscribe
-    private psubFn:{[index:string]:Array<Function>};//psubscribe
-    private sub_backs:Array<OptEvent>;//subscribe_cmd_handler
+    private _prefix:{str:string,buf:Class_Buffer}={str:"",buf:null};
+    private _opts:{db:number, timeout:number, host:string,port:number,auth:string,autoReconnect:boolean};
+    private _parser;
+    private _reader:Class_Fiber;
+    private _socket:Class_Socket;
+    private _onOpen:Class_Event;
+    private _connected:boolean;
+    private _killed:boolean;
+    private _backs:Array<OptEvent>;//request_response_fn
+    private _mult_backs:Array<Function>;//mult_exec_convert
+    private _subFn:{[index:string]:Array<Function>};//subscribe
+    private _psubFn:{[index:string]:Array<Function>};//psubscribe
+    private _sub_backs:Array<OptEvent>;//subscribe_cmd_handler
     constructor(url:string="redis://127.0.0.1:6379"){
         var urlObj=Url.parse(url);
         var host=urlObj.hostname;
@@ -51,68 +52,78 @@ class Redis {
                 autoReconnect=tag!="0"&&tag!="false"&&tag!="no"&&tag!="";
             }
         }
-        this.opts={db:initDb, timeout:timeout,autoReconnect:autoReconnect, auth:auth, host:host,port:port,};
-        this.onOpen = new coroutine.Event(false);
-        this.do_conn();
+        this._opts={db:initDb, timeout:timeout,autoReconnect:autoReconnect, auth:auth, host:host,port:port,};
+        this._onOpen = new coroutine.Event(false);
+        this._do_conn();
     }
-    private do_conn(){
-        let opts = this.opts;
+    public get prefix():string{
+        return this._prefix.str;
+    }
+    public set prefix(s:string){
+        if(s==null||s.length==0){
+            this._prefix={str:"",buf:null};
+        }else{
+            this._prefix={str:s,buf:Buffer.from(s)};
+        }
+    }
+    private _do_conn(){
+        let opts = this._opts;
         var sock=new net.Socket();
         sock.timeout=opts.timeout;
         sock.connect(opts.host, opts.port);
         var buf=new io.BufferedStream(sock);
         buf.EOL="\r\n";
-        opts.auth && this.pre_command(sock,buf,'auth',opts.auth);
-        opts.db>0 && this.pre_command(sock,buf,'select',opts.db);
-        this.socket=sock;
+        opts.auth && this._pre_command(sock,buf,'auth',opts.auth);
+        opts.db>0 && this._pre_command(sock,buf,'select',opts.db);
+        this._socket=sock;
         // this.stream=buf;
-        this.backs=[];
-        this.connected=true;
+        this._backs=[];
+        this._connected=true;
         let self=this;
-        self.parser = new RedisParser({
+        self._parser = new RedisParser({
             returnBuffers:true,
             optionStringNumbers:true,
             returnReply: reply => {
                 // console.log("--->>>",reply.toString())
-                if(self.sub_backs){
-                    self.on_subReply(reply);
+                if(self._sub_backs){
+                    self._on_subReply(reply);
                 }else{
-                    self.backs.shift().then(reply);
+                    self._backs.shift().then(reply);
                 }
             },
             returnError: error => {
-                if (self.sub_backs) {
-                    self.sub_backs.shift().fail(error);
+                if (self._sub_backs) {
+                    self._sub_backs.shift().fail(error);
                 }else{
-                    self.backs.shift().fail(error);
+                    self._backs.shift().fail(error);
                 }
             }
         });
         sock.timeout=-1;
-        self.reader = coroutine.start(function () {
+        self._reader = coroutine.start(function () {
             var buf=null;
-            var sock=self.socket;
-            while (self.connected){
+            var sock=self._socket;
+            while (self._connected){
                 try{
                     buf=sock.recv(self.bufSize);
                     if(buf==null){
-                        self.on_lost();
+                        self._on_lost();
                         break;
                     }
-                    self.parser.execute(buf);
+                    self._parser.execute(buf);
                 }catch (e) {
-                    if(!self.killed){
+                    if(!self._killed){
                         console.error("xredis.on_read",e);
-                        self.on_err(e);
+                        self._on_err(e);
                     }
                     break;
                 }
             }
         });
         this.pre_sub_onConnect();
-        self.onOpen.set();
+        self._onOpen.set();
     }
-    private pre_command(sock:Class_Socket,buf:Class_BufferedStream, ...args){
+    private _pre_command(sock:Class_Socket,buf:Class_BufferedStream, ...args){
         // buf.write(commandToResp(args));
         buf.write(encodeCommand(args));
         var str=buf.readLine();
@@ -125,38 +136,38 @@ class Redis {
             throw new RedisError("ERR invalid password");
         }
     }
-    private on_lost(){
-        this.on_err(new Error("io_error"), true);
+    private _on_lost(){
+        this._on_err(new Error("io_error"), true);
     }
-    private on_err(e, deadErr?:boolean){
-        if(this.socket==null){
+    private _on_err(e, deadErr?:boolean){
+        if(this._socket==null){
             return;
         }
         try{
-            this.socket.close();
+            this._socket.close();
         }catch (e) {
         }
-        this.connected=false;
-        this.onOpen.clear();
-        var backs=this.backs;this.backs=[];
+        this._connected=false;
+        this._onOpen.clear();
+        var backs=this._backs;this._backs=[];
         backs.forEach(operation=>{
             operation.fail(e);
         });
-        backs=this.sub_backs;this.sub_backs=null;
+        backs=this._sub_backs;this._sub_backs=null;
         if(backs){
             backs.forEach(operation=>{
                 operation.fail(e);
             });
         }
-        this.mult_backs=null;
-        if(this.opts.autoReconnect && !this.killed){
+        this._mult_backs=null;
+        if(this._opts.autoReconnect && !this._killed){
             var i=0;
-            while(!this.connected && !this.killed){
+            while(!this._connected && !this._killed){
                 try{
-                    this.do_conn();
+                    this._do_conn();
                     break;
                 }catch (e) {
-                    console.error(this.opts.host+":"+this.opts.port, e);
+                    console.error(this._opts.host+":"+this._opts.port, e);
                 }
                 i++;
                 coroutine.sleep(Math.min(i*5,500));
@@ -164,38 +175,38 @@ class Redis {
         }
     }
     public close(){
-        this.killed=true;
-        this.connected=false;
-        var sock=this.socket;
-        this.socket=null;
+        this._killed=true;
+        this._connected=false;
+        var sock=this._socket;
+        this._socket=null;
         try{
             sock.close();
         }catch (e) {
         }
-        var backs=this.backs;this.backs=[];
+        var backs=this._backs;this._backs=[];
         var e=new Error("io_close");
         backs.forEach(operation=>{
             operation.fail(e);
         });
     }
-    private temp_cmds=[];
+    private _temp_cmds=[];
     private send(...args){
         var pipe = PipeWrap.get();
         if(pipe){
             pipe.commands.push(encodeCommand(args));
         }else{
-            if(this.killed){
+            if(this._killed){
                 throw new RedisError("io_had_closed");
             }
-            if(!this.connected && this.opts.autoReconnect){
+            if(!this._connected && this._opts.autoReconnect){
                 if(this.waitReconnect){
-                    this.onOpen.wait();//等待重连
+                    this._onOpen.wait();//等待重连
                 }
             }
-            if(!this.socket || !this.connected){
+            if(!this._socket || !this._connected){
                 throw new RedisError("io_error");
             }
-            this.temp_cmds.push(encodeCommand(args));
+            this._temp_cmds.push(encodeCommand(args));
         }
         return this;
     }
@@ -205,22 +216,23 @@ class Redis {
             pipe.casts.push(convert);
             return this;
         }
-        var backs=this.backs;
-        if(this.sub_backs){
-            backs=this.sub_backs;
-        }else if(this.mult_backs){
-            this.mult_backs.push(convert);
+        var backs=this._backs;
+        if(this._sub_backs){
+            backs=this._sub_backs;
+        }else if(this._mult_backs){
+            this._mult_backs.push(convert);
             convert=castStr;
         }
         var evt=new OptEvent();
         backs.push(evt);
+        var tmpcmds=this._temp_cmds;
         try{
-            this.socket.send(this.temp_cmds.length==1?this.temp_cmds[0]:Buffer.concat(this.temp_cmds));
-            this.temp_cmds.length=0;
+            this._socket.send(tmpcmds.length==1?tmpcmds[0]:Buffer.concat(tmpcmds));
         }catch (e) {
-            this.temp_cmds.length=0;
-            this.on_err(e, true);
+            this._on_err(e, true);
             throw e;
+        }finally {
+            tmpcmds.length=0;
         }
         return evt.wait(convert);
     }
@@ -232,8 +244,10 @@ class Redis {
         return this.send(CmdPing).wait(castStr);
     }
     public quit():boolean{
-        var r = this.send(CmdQuit).wait(castBool);
-        this.close();
+        var t=this.send(CmdQuit);
+        t._killed=true;
+        var r = t.wait(castBool);
+        t.close();
         return r;
     }
     public echo(s:string):string{
@@ -269,30 +283,31 @@ class Redis {
     }
     public watch(...keys){
         keys=util.isArray(keys[0])?keys[0]:keys;
+        keys=this._fix_prefix_any(keys);
         return this.send(CmdWatch, ...keys).wait(castBool);
     }
     public unwatch(){
         return this.send(CmdUnWatch).wait(castBool);
     }
     public multi(){
-        if(this.sub_backs){
+        if(this._sub_backs){
             throw new RedisError("in_subscribe_context");
         }
-        if(!this.mult_backs){
-            this.mult_backs = [];
+        if(!this._mult_backs){
+            this._mult_backs = [];
             try{
                 this.send(CmdMulti).wait(castBool);
-                this.mult_backs = [];
+                this._mult_backs = [];
             }catch(e){
-                this.mult_backs = null;
+                this._mult_backs = null;
                 throw e;
             }
         }
         return this;
     }
     public exec(){
-        var fns=this.mult_backs;
-        this.mult_backs=null;
+        var fns=this._mult_backs;
+        this._mult_backs=null;
         return this.send(CmdExec).wait(function(a){
             a.forEach((v,k,o)=>{
                 o[k] = fns[k]?fns[k](v):v;
@@ -301,7 +316,7 @@ class Redis {
         });
     }
     public pipeOpen(){
-        if(this.mult_backs || this.sub_backs){
+        if(this._mult_backs || this._sub_backs){
             throw new RedisError("in_mult_ctx or in_subscribe_ctx");
         }
         if(!PipeWrap.has()){
@@ -311,53 +326,59 @@ class Redis {
     }
     public pipeSubmit(){
         var pipe = PipeWrap.finish();
-        if(this.mult_backs || this.sub_backs){
+        if(this._mult_backs || this._sub_backs){
             throw new RedisError("in_mult_ctx or in_subscribe_ctx");
         }
         if(pipe.commands.length==0){
             return [];
         }
-        if(!this.connected && this.opts.autoReconnect && !this.killed){
-            this.onOpen.wait();//重连
+        if(!this._connected && this._opts.autoReconnect && !this._killed){
+            this._onOpen.wait();//重连
         }
         var events = new PipelineOptEvent(pipe.casts);
         pipe.casts.forEach(e=>{
-            this.backs.push(events);
+            this._backs.push(events);
         });
         try{
-            this.socket.send(Buffer.concat(pipe.commands));
+            this._socket.send(Buffer.concat(pipe.commands));
         }catch (e) {
-            this.on_err(e, true);
+            this._on_err(e, true);
             throw e;
         }
         return events.waitAll(true);
     }
-    public publish(channel:string|Class_Buffer, data:any):number{
-        return this.send(CmdPublish, channel, data).wait(castNumber);
-    }
+
     public keys(pattern:string|Class_Buffer):string[]{
+        pattern=this._fix_prefix_any(pattern);
         return this.send(CmdKeys, pattern).wait(castStrs);
     }
     public exists(key:string|Class_Buffer):boolean{
+        key=this._fix_prefix_any(key);
         return this.send(CmdExists, key).wait(castBool);
     }
     public type(key:string|Class_Buffer):string{
+        key=this._fix_prefix_any(key);
         return this.send(CmdType, key).wait(castStr);
     }
     public rename(key:string|Class_Buffer,newkey:string|Class_Buffer):boolean{
+        key=this._fix_prefix_any(key);newkey=this._fix_prefix_any(newkey);
         return this.send(CmdRename,key,newkey).wait(castBool);
     }
     public renameNX(key:string|Class_Buffer,newkey:string|Class_Buffer):boolean{
+        key=this._fix_prefix_any(key);newkey=this._fix_prefix_any(newkey);
         return this.send(CmdRenameNX,key,newkey).wait(castBool);
     }
     public dump(key:string|Class_Buffer):string{
+        key=this._fix_prefix_any(key);
         return this.send(CmdDump, key).wait(castStr);
     }
     public touch(...keys):number{
         keys=util.isArray(keys[0])?keys[0]:keys;
+        keys=this._fix_prefix_any(keys);
         return this.send(CmdTouch, ...keys).wait(castNumber);
     }
     public move(key:string|Class_Buffer, toDb:number):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdMove, key, toDb).wait(castNumber);
     }
     public randomKey():string{
@@ -365,46 +386,57 @@ class Redis {
     }
     public del(...keys):number{
         keys=util.isArray(keys[0])?keys[0]:keys;
+        keys=this._fix_prefix_any(keys);
         return this.send(CmdDel, ...keys).wait(castNumber);
     }
     public unlink(...keys):number{
         keys=util.isArray(keys[0])?keys[0]:keys;
+        keys=this._fix_prefix_any(keys);
         return this.send(CmdUnlink, ...keys).wait(castNumber);
     }
     public expire(key:string|Class_Buffer, ttl:number=0):boolean{
+        key=this._fix_prefix_any(key);
         return this.send(CmdExpire, key,ttl).wait(castBool);
     }
     public pexpire(key:string|Class_Buffer, ttl:number=0):boolean{
+        key=this._fix_prefix_any(key);
         return this.send(CmdPexpire, key,ttl).wait(castBool);
     }
     public pttl(key:string|Class_Buffer):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdPttl, key).wait(castNumber);
     }
     public ttl(key:string|Class_Buffer):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdTtl, key).wait(castNumber);
     }
     public persist(key:string|Class_Buffer):boolean{
+        key=this._fix_prefix_any(key);
         return this.send(CmdPersist, key).wait(castBool);
     }
     public set(key:string|Class_Buffer, val:any, ttl:number=0):boolean{
+        key=this._fix_prefix_any(key);
         if(ttl<1){
             return this.send(CmdSet,key,val).wait(castBool);
         }
         return this.send(CmdSet,key,val,CmdOptEX,ttl).wait(castBool);
     }
     public add(key:string|Class_Buffer, val:any, ttl:number=0):boolean{
+        key=this._fix_prefix_any(key);
         if(ttl<1){
             return this.send(CmdSet,key,val,CmdOptNX).wait(castBool);
         }
         return this.send(CmdSet,key,val,CmdOptEX,ttl,CmdOptNX).wait(castBool);
     }
     public setNX(key:string|Class_Buffer, val:any, ttl:number=0):boolean{
+        key=this._fix_prefix_any(key);
         if(ttl<1){
             return this.send(CmdSet,key,val,CmdOptNX).wait(castBool);
         }
         return this.send(CmdSet,key,val,CmdOptEX,ttl,CmdOptNX).wait(castBool);
     }
     public setXX(key:string|Class_Buffer, val:any, ttl:number=0):boolean{
+        key=this._fix_prefix_any(key);
         if(ttl<1){
             return this.send(CmdSet,key,val,CmdOptXX).wait(castBool);
         }
@@ -412,35 +444,49 @@ class Redis {
     }
     public mset(...kvs):boolean{
         kvs=kvs.length==1?toArray(kvs[0],[]):kvs;
+        for(var i=0;i<kvs.length;i+=2){
+            kvs[i]=this._fix_prefix_any(kvs[i]);
+        }
         return this.send(CmdMSet, ...kvs).wait(castBool);
     }
     public msetNX(...kvs):boolean{
         kvs=kvs.length==1?toArray(kvs[0],[]):kvs;
+        for(var i=0;i<kvs.length;i+=2){
+            kvs[i]=this._fix_prefix_any(kvs[i]);
+        }
         return this.send(CmdMSetNX, ...kvs).wait(castBool);
     }
     public append(key:string|Class_Buffer, val:string|Class_Buffer):boolean{
+        key=this._fix_prefix_any(key);
         return this.send(CmdAppend, key, val).wait(castBool);
     }
     public setRange(key:string|Class_Buffer, offset:number, val:string|Class_Buffer):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdSetRange, key, offset, val).wait(castNumber);
     }
     public getRange(key:string|Class_Buffer, start:number, end:number, castFn=castStr):string{
+        key=this._fix_prefix_any(key);
         return this.send(CmdGetRange, key, start, end).wait(castFn);
     }
     public substr(key:string|Class_Buffer, start:number, end:number, castFn=castStr):string|Class_Buffer{
+        key=this._fix_prefix_any(key);
         return this.send(CmdSubstr, key, start, end).wait(castFn);
     }
     public strlen(key:string|Class_Buffer):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdStrlen, key).wait(castNumber);
     }
     public get(key:string|Class_Buffer, castFn=castStr){
+        key=this._fix_prefix_any(key);
         return this.send(CmdGet, key).wait(castFn);
     }
     public mget(keys:string[], castFn=castStrs){
+        var keys=this._fix_prefix_any(keys);
         return this.send(CmdMGet, ...keys).wait(castFn);
     }
     public mgetWrap(keys:string[], castFn=castStrs){
-        var a=this.send(CmdMGet, ...keys).wait(castFn);
+        var preKeys=this._fix_prefix_any(keys);
+        var a=this.send(CmdMGet, ...preKeys).wait(castFn);
         var r={};
         for(var i=0;i<keys.length;i++){
             r[keys[i].toString()] = a[i];
@@ -448,40 +494,52 @@ class Redis {
         return r;
     }
     public getSet(key:string|Class_Buffer, val:any, castFn=castStr){
+        key=this._fix_prefix_any(key);
         return this.send(CmdGetSet, key, val).wait(castFn);
     }
     public incr(key:string|Class_Buffer, castFn=castNumber){
+        key=this._fix_prefix_any(key);
         return this.send(CmdIncr,key).wait(castFn);
     }
     public decr(key:string|Class_Buffer, castFn=castNumber){
+        key=this._fix_prefix_any(key);
         return this.send(CmdDecr,key).wait(castFn);
     }
     public incrBy(key:string|Class_Buffer, step:number, castFn=castNumber){
+        key=this._fix_prefix_any(key);
         return this.send(CmdIncrBy,key,step).wait(castFn);
     }
     public decrBy(key:string|Class_Buffer, step:number, castFn=castNumber){
+        key=this._fix_prefix_any(key);
         return this.send(CmdDecrBy,key,step).wait(castFn);
     }
     public bitCount(key:string|Class_Buffer):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdBitcount, key).wait(castNumber);
     }
     public bitPos(key:string|Class_Buffer, start:number, end?:number):number{
+        key=this._fix_prefix_any(key);
         if(arguments.length>2){
             return this.send(CmdBitpos, key, start, end).wait(castNumber);
         }
         return this.send(CmdBitpos, key, start).wait(castNumber);
     }
     public bitOp(option:'AND'|'OR'|'NOT'|'XOR', destkey:string|Class_Buffer, ...keys):number{
-        return this.send(CmdBitop, ...arguments).wait(castNumber);
+        keys.unshift(destkey);
+        keys=this._fix_prefix_any(keys);
+        keys.unshift(option);
+        return this.send(CmdBitop, ...keys).wait(castNumber);
     }
     public setBit(key:string|Class_Buffer, offset:number, val:number):boolean{
+        key=this._fix_prefix_any(key);
         return this.send(CmdSetbit, key, offset, val).wait(castBool);
     }
     public getBit(key:string|Class_Buffer, offset:number):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdGetbit, key, offset).wait(castNumber);
     }
 
-    private scan_act(parse:Function, cmd:string, key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number){
+    private _scan_act(parse:Function, cmd:string, key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number){
         var args:Array<any>=cmd=='scan'?[cmd, cursor]:[cmd,key,cursor];
         if(matchPattern&&matchPattern.length>0){
             args.push('MATCH',matchPattern);
@@ -505,23 +563,29 @@ class Redis {
         return a;
     }
     public scan(cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs){
-        return this.scan_act(castFn, 'scan', null, cursor, matchPattern, matchCount);
+        matchPattern=this._fix_prefix_any(matchPattern);
+        return this._scan_act(castFn, 'scan', null, cursor, matchPattern, matchCount);
     }
     public sscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs){
-        return this.scan_act(castFn, 'sscan', key, cursor, matchPattern, matchCount);
+        key=this._fix_prefix_any(key);
+        return this._scan_act(castFn, 'sscan', key, cursor, matchPattern, matchCount);
     }
     public hscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs){
-        return this.scan_act(castFn, 'hscan', key, cursor, matchPattern, matchCount);
+        key=this._fix_prefix_any(key);
+        return this._scan_act(castFn, 'hscan', key, cursor, matchPattern, matchCount);
     }
     public zscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs){
-        return this.scan_act(castFn, 'zscan', key, cursor, matchPattern, matchCount);
+        key=this._fix_prefix_any(key);
+        return this._scan_act(castFn, 'zscan', key, cursor, matchPattern, matchCount);
     }
 
     public geoadd(key:string|Class_Buffer, ...LngLatMembers){
+        key=this._fix_prefix_any(key);
         LngLatMembers.unshift('geoadd',key);
         return this.send(...LngLatMembers).send(castNumber);
     }
     public geodist(key:string|Class_Buffer, m1:any, m2:any, unit?:string){
+        key=this._fix_prefix_any(key);
         var args=['geodist',key,m1,m2];
         if(unit){
             args.push(unit);
@@ -529,10 +593,12 @@ class Redis {
         return this.send(...args).wait(castNumber);
     }
     public geohash(key:string|Class_Buffer, ...members){
+        key=this._fix_prefix_any(key);
         members.unshift('geohash',key);
         return this.send(...members).wait(castStrs);
     }
     public geopos(key:string|Class_Buffer, ...members){
+        key=this._fix_prefix_any(key);
         members.unshift('geopos',key);
         var a=this.send(...members).wait();
         a.forEach((v,k,o)=>{
@@ -545,6 +611,7 @@ class Redis {
         return a;
     }
     public georadius(key:string|Class_Buffer, longitude:string|number, latitude:string|number, radius:string|number, unit:string, withOpts?:Array<string>){
+        key=this._fix_prefix_any(key);
         var args=['georadius', key, longitude, latitude, radius, unit];
         if(withOpts){
             withOpts.forEach(v=>{
@@ -564,92 +631,119 @@ class Redis {
         return a;
     }
     public georadiusbymember(key:string|Class_Buffer, member:any, radius:string|number, unit:string){
+        key=this._fix_prefix_any(key);
         var args=['georadiusbymember',key,member,radius,unit];
         return this.send(...args).wait(castStrs);
     }
 
 
     public lPush(key:string|Class_Buffer, ...vals):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdLpush, key, ...vals).wait(castNumber);
     }
     public rPush(key:string|Class_Buffer, ...vals):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdRpush, key, ...vals).wait(castNumber);
     }
     public lPushx(key:string|Class_Buffer, val:any):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdLpushx, key, val).wait(castNumber);
     }
     public rPushx(key:string|Class_Buffer, val:any){
+        key=this._fix_prefix_any(key);
         return this.send(CmdRpushx, key, val).wait(castNumber);
     }
     public lLen(key:string|Class_Buffer){
+        key=this._fix_prefix_any(key);
         return this.send(CmdLlen, key).wait(castNumber);
     }
     public lPop(key:string|Class_Buffer, castFn=castStr){
+        key=this._fix_prefix_any(key);
         return this.send(CmdLpop, key).wait(castFn);
     }
     public rPop(key:string|Class_Buffer, castFn=castStr){
+        key=this._fix_prefix_any(key);
         return this.send(CmdRpop, key).wait(castFn);
     }
     public lIndex(key:string|Class_Buffer, offset:number, castFn=castStr){
+        key=this._fix_prefix_any(key);
         return this.send(CmdLindex, key, offset).wait(castFn);
     }
     public lInsert(key:string|Class_Buffer, pivot:any, val:any, toBefore:boolean=true){
+        key=this._fix_prefix_any(key);
         return this.send(CmdLinsert, key, toBefore?'BEFORE':'AFTER', pivot, val).wait(castNumber);
     }
     public lSet(key:string|Class_Buffer, index:number, val:any){
+        key=this._fix_prefix_any(key);
         return this.send(CmdLset, key, index, val).wait(castBool);
     }
     public lRem(key:string|Class_Buffer, count:number, val:any){
+        key=this._fix_prefix_any(key);
         return this.send(CmdLrem, key, count, val).wait(castNumber);
     }
     public lTrim(key:string|Class_Buffer, start:number, stop:number){
+        key=this._fix_prefix_any(key);
         return this.send(CmdLtrim, key, start, stop).wait(castNumber);
     }
     public lRange(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         return this.send(CmdLrange, key, start, stop).wait(castFn);
     }
-    public bLpop(key:any, timeout:number, castFn=castStr){
+    public bLpop(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number, castFn=castStr){
+        key=this._fix_prefix_any(key);
         var args=Array.isArray(key) ? [CmdBlpop, ...key, timeout]:[CmdBlpop, key, timeout];
         return this.send(...args).wait(castFn);
     }
-    public bRpop(key:any, timeout:number, castFn=castStr){
+    public bRpop(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number, castFn=castStr){
+        key=this._fix_prefix_any(key);
         var args=Array.isArray(key) ? [CmdBrpop, ...key, timeout]:[CmdBrpop, key, timeout];
         return this.send(...args).wait(castFn);
     }
     public bRpopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, timeout:number, castFn=castStr){
+        srcKey=this._fix_prefix_any(srcKey); destKey=this._fix_prefix_any(destKey);
         var args=[CmdBrpopLpush, srcKey, destKey, timeout];
         return this.send(...args).wait(castFn);
     }
     public rPopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, castFn=castStr){
+        srcKey=this._fix_prefix_any(srcKey); destKey=this._fix_prefix_any(destKey);
         return this.send(CmdRpopLpush, srcKey, destKey).wait(castFn);
     }
 
     public hSet(key:string|Class_Buffer, field:string|Class_Buffer, val:any ){
+        key=this._fix_prefix_any(key);
         return this.send(CmdHSet, key, field, val).wait(castNumber);
     }
     public hSetNx(key:string|Class_Buffer, field:string|Class_Buffer, val:any ){
+        key=this._fix_prefix_any(key);
         return this.send(CmdHSetNx, key, field, val).wait(castNumber);
     }
     public hGet(key:string|Class_Buffer, field:string|Class_Buffer, castFn=castStr ){
+        key=this._fix_prefix_any(key);
         return this.send(CmdHGet, key, field).wait(castFn);
     }
     public hLen(key:string|Class_Buffer){
+        key=this._fix_prefix_any(key);
         return this.send(CmdHLen, key).wait(castNumber);
     }
     public hDel(key:string|Class_Buffer, ...fields){
+        key=this._fix_prefix_any(key);
         fields=util.isArray(fields[0])?fields[0]:fields;
         return this.send(CmdHdel, ...fields).wait(castNumber);
     }
     public hKeys(key:string|Class_Buffer, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         return this.send(CmdHKeys, key).wait(castFn);
     }
     public hVals(key:string|Class_Buffer, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         return this.send(CmdHVals, key).wait(castFn);
     }
     public hGetAll(key:string|Class_Buffer, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         return this.send(CmdHGetAll, key).wait(castFn);
     }
     public hGetAllWrap(key:string|Class_Buffer, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         var a = this.send(CmdHGetAll, key).wait(castFn);
         var r = {};
         for(var i=0;i<a.length;i+=2){
@@ -658,15 +752,19 @@ class Redis {
         return r;
     }
     public hExists(key:string|Class_Buffer, field:string|Class_Buffer):boolean{
+        key=this._fix_prefix_any(key);
         return this.send(CmdHExists, key, field).wait(castBool);
     }
     public hIncrBy(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}, castFn=castNumber):any{
+        key=this._fix_prefix_any(key);
         return this.send(CmdHIncrBy, key, field, val).wait(castFn);
     }
     public hIncrByFloat(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}):any{
+        key=this._fix_prefix_any(key);
         return this.send(CmdHIncrByFloat, key, field, val).wait(castNumber);
     }
     public hMset(key:string|Class_Buffer, hashObj:{[index:string]:any}){
+        key=this._fix_prefix_any(key);
         var args = [CmdHMset, key];
         for(var k in hashObj){
             args.push(k, hashObj[k]);
@@ -674,10 +772,12 @@ class Redis {
         return this.send(...args).wait(castBool);
     }
     public hMGet(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         if(!fields || fields.length<1)return [];
         return this.send(CmdHMget, key, ...fields).wait(castFn);
     }
     public hMGetWrap(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         if(!fields || fields.length<1)return [];
         var a = this.send(CmdHMget, key, ...fields).wait(castFn);
         var r = {};
@@ -688,51 +788,70 @@ class Redis {
     }
 
     public sAdd(key:string|Class_Buffer, ...members):number{
+        key=this._fix_prefix_any(key);
         members=util.isArray(members[0])?members[0]:members;
         return this.send(CmdSadd, key, ...members).wait(castNumber);
     }
     public sRem(key:string|Class_Buffer, ...members):number{
+        key=this._fix_prefix_any(key);
         members=util.isArray(members[0])?members[0]:members;
         return this.send(CmdSrem, key, ...members).wait(castNumber);
     }
     public sCard(key:string|Class_Buffer):number{
+        key=this._fix_prefix_any(key);
         return this.send(CmdScard, key).wait(castNumber);
     }
     public sPop(key:string|Class_Buffer, num:number=1, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         return this.send(CmdSpop, key, num).wait(castFn);
     }
     public sRandmember(key:string|Class_Buffer, num:number=1, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         return this.send(CmdSrandmember, key, num).wait(castFn);
     }
     public sIsmember(key:string|Class_Buffer, member:any):boolean{
+        key=this._fix_prefix_any(key);
         return this.send(CmdSismember, key, member).wait(castBool);
     }
     public sDiff(keys:Array<string|Class_Buffer>, castFn=castStrs){
+        keys=this._fix_prefix_any(keys);
         return this.send(CmdSdiff, ...keys).wait(castFn);
     }
     public sDiffStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>){
+        keys.unshift(destKey);
+        keys=this._fix_prefix_any(keys);
         return this.send(CmdSdiffStore, destKey, ...keys).wait(castNumber);
     }
     public sInter(keys:Array<string|Class_Buffer>, castFn=castStrs){
+        keys=this._fix_prefix_any(keys);
         return this.send(CmdSinter, ...keys).wait(castFn);
     }
     public sInterStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>){
-        return this.send(CmdSinterStore, destKey, ...keys).wait(castNumber);
+        keys.unshift(destKey);
+        keys=this._fix_prefix_any(keys);
+        return this.send(CmdSinterStore, ...keys).wait(castNumber);
     }
     public sUnion(keys:Array<string|Class_Buffer>, castFn=castStrs){
+        keys=this._fix_prefix_any(keys);
         return this.send(CmdSunion, ...keys).wait(castFn);
     }
     public sUnionStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>){
-        return this.send(CmdSunionStore, destKey, ...keys).wait(castNumber);
+        keys.unshift(destKey);
+        keys=this._fix_prefix_any(keys);
+        return this.send(CmdSunionStore, ...keys).wait(castNumber);
     }
     public sMembers(key:string|Class_Buffer, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         return this.send(CmdSmembers,key).wait(castFn);
     }
     public sMove(sourceKey:string|Class_Buffer, destKey:string|Class_Buffer, member:any){
-        return this.send(CmdSmove, sourceKey, destKey, member).wait(castNumber);
+        var keys=[sourceKey,destKey];
+        keys=this._fix_prefix_any(keys);
+        return this.send(CmdSmove, ...keys, member).wait(castNumber);
     }
 
     public zAdd(key:string|Class_Buffer, sms:{[index:string]:number}|Array<any>, opts?:Array<string>){
+        key=this._fix_prefix_any(key);
         var smsArr:Array<any>=Array.isArray(sms)?sms:toZsetArray(sms,[]);
         if(!opts){
             opts=[];
@@ -740,36 +859,46 @@ class Redis {
         return this.send(CmdZadd, key, opts.join(''), ...smsArr).wait(castNumber);
     }
     public zCard(key:string|Class_Buffer){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZcard, key).wait(castNumber);
     }
     public zCount(key:string|Class_Buffer, min:string|number, max:string|number){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZcount, key, min, max).wait(castNumber);
     }
     public zLexCount(key:string|Class_Buffer, min:string|number, max:string|number){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZlexcount, key, min, max).wait(castNumber);
     }
     public zIncrBy(key:string|Class_Buffer, member:any, increment:number, castFn=castNumber){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZincrBy, key, increment, member).wait(castFn);
     }
     public zScore(key:string|Class_Buffer, member:any, castFn=castNumber){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZscore, key, member).wait(castFn);
     }
     public zRank(key:string|Class_Buffer, member:any){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZrank, key, member).wait(castNumber);
     }
     public zRem(key:string|Class_Buffer, ...members){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZrem, key, ...members).wait(castNumber);
     }
     public zRemByLex(key:string|Class_Buffer, min:string|number, max:string|number){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZremRangeByLex, key, min,max).wait(castNumber);
     }
     public zRemByScore(key:string|Class_Buffer, min:string|number, max:string|number){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZremRangeByScore, key, min,max).wait(castNumber);
     }
     public zRemByRank(key:string|Class_Buffer, start:number, stop:number){
+        key=this._fix_prefix_any(key);
         return this.send(CmdZremRangeByRank, key, start,stop).wait(castNumber);
     }
-    private z_act(castFn, scorePv:number, args:Array<any>){
+    private _z_act(castFn, scorePv:number, args:Array<any>){
         if(scorePv==0){
             return this.send(...args).wait(castFn);
         }
@@ -791,38 +920,47 @@ class Redis {
         return list;
     }
     public zPopMin(key:string|Class_Buffer, num:number=1, castFn=castStrs){
-        return this.z_act(castFn, 1, [CmdZpopmin, key, num]);
+        key=this._fix_prefix_any(key);
+        return this._z_act(castFn, 1, [CmdZpopmin, key, num]);
     }
     public zPopMax(key:string|Class_Buffer, num:number=1, castFn=castStrs){
-        return this.z_act(castFn, 1, [CmdZpopmax, key, num]);
+        key=this._fix_prefix_any(key);
+        return this._z_act(castFn, 1, [CmdZpopmax, key, num]);
     }
     public zRange(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
-        return this.z_act(castFn, 0, [CmdZrange, key, start, stop]);
+        key=this._fix_prefix_any(key);
+        return this._z_act(castFn, 0, [CmdZrange, key, start, stop]);
     }
     public zRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
-        return this.z_act(castFn, -1, [CmdZrange, key, start, stop]);
+        key=this._fix_prefix_any(key);
+        return this._z_act(castFn, -1, [CmdZrange, key, start, stop]);
     }
     public zRevRange(key:string|Class_Buffer, start:number, stop:number, withScore?:boolean, castFn=castStrs){
-        return this.z_act(castFn, 0, [CmdZrevRange, key, start, stop]);
+        key=this._fix_prefix_any(key);
+        return this._z_act(castFn, 0, [CmdZrevRange, key, start, stop]);
     }
     public zRevRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
-        return this.z_act(castFn, -1, [CmdZrevRange, key, start, stop]);
+        key=this._fix_prefix_any(key);
+        return this._z_act(castFn, -1, [CmdZrevRange, key, start, stop]);
     }
     public zRangeByScore(key:string|Class_Buffer, min:number, max:number, opts:{withScore?:boolean, limit?:{offset:number,count:number}}={withScore:false}, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         var args = [CmdZrangeByScore, key, min, max];
         if(opts.limit){
             args.push('LIMIT',opts.limit.offset,opts.limit.count);
         }
-        return this.z_act(castFn, opts.withScore?-1:0, args);
+        return this._z_act(castFn, opts.withScore?-1:0, args);
     }
     public zRevRangeByScore(key:string|Class_Buffer, min:number, max:number, opts:{withScore?:boolean, limit?:{offset:number,count:number}}={withScore:false}, castFn=castStrs){
+        key=this._fix_prefix_any(key);
         var args = [CmdZrevrangeByScore, key, min, max];
         if(opts.limit){
             args.push('LIMIT',opts.limit.offset,opts.limit.count);
         }
-        return this.z_act(castFn, opts.withScore?-1:0, args);
+        return this._z_act(castFn, opts.withScore?-1:0, args);
     }
-    public bzPopMin(key:string|Class_Buffer, timeout:number=0, castFn=castStr){
+    public bzPopMin(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn=castStr){
+        key=this._fix_prefix_any(key);
         var args = Array.isArray(key) ? [CmdBzPopMin, ...key, timeout]:[CmdBzPopMin, key, timeout];
         var r=this.send(...args).wait();
         r[0]=r[0].toString();
@@ -830,7 +968,8 @@ class Redis {
         r[2]=castFn(r[2]);
         return r;
     }
-    public bzPopMax(key:string|Class_Buffer, timeout:number=0, castFn=castStr){
+    public bzPopMax(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn=castStr){
+        key=this._fix_prefix_any(key);
         var args = Array.isArray(key) ? [CmdBzPopMax, ...key, timeout]:[CmdBzPopMax, key, timeout];
         var r=this.send(...args).wait();
         r[0]=r[0].toString();
@@ -840,21 +979,28 @@ class Redis {
     }
 
     public pfAdd(key:string|Class_Buffer, ...elements){
-        elements=util.isArray(elements[0])?elements[0]:elements;
-        return this.send(CmdPfadd, key, ...elements).wait(castNumber);
+        var keys=util.isArray(elements[0])?elements[0]:elements;
+        keys=this._fix_prefix_any(keys);
+        return this.send(CmdPfadd, ...keys).wait(castNumber);
     }
     public pfCount(key:string|Class_Buffer){
+        key=this._fix_prefix_any(key);
         return this.send(CmdPfcount, key).wait(castNumber);
     }
     public pfMerge(destKey:string|Class_Buffer, ...sourceKeys){
-        sourceKeys=util.isArray(sourceKeys[0])?sourceKeys[0]:sourceKeys;
-        return this.send(CmdPfmerge, destKey, ...sourceKeys).wait(castBool);
+        var keys=util.isArray(sourceKeys[0])?sourceKeys[0]:sourceKeys;
+        keys.unshift(destKey);
+        keys=this._fix_prefix_any(sourceKeys);
+        return this.send(CmdPfmerge, ...keys).wait(castBool);
     }
 
-    private real_sub(cmd, key:string, fn:Function, isSubscribe?:boolean){
+    public publish(channel:string|Class_Buffer, data:any):number{
+        return this.send(CmdPublish, channel, data).wait(castNumber);
+    }
+    private _real_sub(cmd, key:string, fn:Function, isSubscribe?:boolean){
         this.pre_sub();
         var r=this.send(cmd, key).wait();
-        var fns:{[index:string]:Array<Function>} = isSubscribe ? this.subFn:this.psubFn;
+        var fns:{[index:string]:Array<Function>} = isSubscribe ? this._subFn:this._psubFn;
         if(fns[key]==null){
             fns[key]=[];
         }
@@ -862,28 +1008,30 @@ class Redis {
         return r;
     }
     public subscribe(key:string|string[], fn:Function){
-        if(key==null||key.length<1||!util.isFunction(fn))return;
+        // if(key==null||key.length<1||!util.isFunction(fn))return;
+        key=this._fix_prefix_str(key);
         if(util.isArray(key)){
             var arr:string[] = <string[]>key;
             arr.forEach(e=>{
-                this.real_sub(CmdSubscribe, e,fn, true);
+                this._real_sub(CmdSubscribe, e,fn, true);
             })
         }else{
-            this.real_sub(CmdSubscribe, key.toString(),fn, true);
+            this._real_sub(CmdSubscribe, key.toString(),fn, true);
         }
     }
     public psubscribe(key:string|string[], fn:Function){
-        if(key==null||key.length<1||!util.isFunction(fn))return;
+        // if(key==null||key.length<1||!util.isFunction(fn))return;
+        key=this._fix_prefix_str(key);
         if(util.isArray(key)){
             var arr:string[] = <string[]>key;
             arr.forEach(e=>{
-                this.real_sub(CmdPSubscribe, e,fn, false);
+                this._real_sub(CmdPSubscribe, e,fn, false);
             })
         }else{
-            this.real_sub(CmdPSubscribe, key.toString(),fn, false);
+            this._real_sub(CmdPSubscribe, key.toString(),fn, false);
         }
     }
-    private real_unsub(cmd, key:string, fn, fns:{[index:string]:Array<Function>}){
+    private _real_unsub(cmd, key:string, fn, fns:{[index:string]:Array<Function>}){
         if(!fns){
             return;
         }
@@ -899,63 +1047,67 @@ class Redis {
         return r;
     }
     public unsubscribe(key:string, fn:Function){
-        return this.real_unsub(CmdUnSubscribe, key, fn, this.subFn);
+        key=this._fix_prefix_str(key);
+        return this._real_unsub(CmdUnSubscribe, key, fn, this._subFn);
     }
     public punsubscribe(key:string, fn:Function){
-        return this.real_unsub(CmdPUnSubscribe, key, fn, this.psubFn);
+        key=this._fix_prefix_str(key);
+        return this._real_unsub(CmdPUnSubscribe, key, fn, this._psubFn);
     }
     public unsubscribeAll(key:string){
-        var fns=this.subFn;
+        key=this._fix_prefix_str(key);
+        var fns=this._subFn;
         var num = fns&&fns[key] ? fns[key].length :1;
         for(var i=0;i<(num+1);i++){
-            this.real_unsub(CmdUnSubscribe, key, null, fns);
+            this._real_unsub(CmdUnSubscribe, key, null, fns);
         }
     }
     public punsubscribeAll(key:string){
-        var fns=this.psubFn;
+        key=this._fix_prefix_str(key);
+        var fns=this._psubFn;
         var num = fns&&fns[key] ? fns[key].length :1;
         for(var i=0;i<(num+1);i++){
-            this.real_unsub(CmdPUnSubscribe, key, null, fns);
+            this._real_unsub(CmdPUnSubscribe, key, null, fns);
         }
     }
     private pre_sub(){
-        if(!this.connected){
+        if(!this._connected){
             throw new RedisError("io_error");
         }
-        if(!this.sub_backs){
-            if(this.mult_backs){
+        if(!this._sub_backs){
+            if(this._mult_backs){
                 throw new RedisError("in_mult_exec");
             }
             if(PipeWrap.has()){
                 throw new RedisError("in_pipeline_ctx");
             }
-            if(this.backs.length>0){
-                this.backs[this.backs.length-1].wait();
+            if(this._backs.length>0){
+                this._backs[this._backs.length-1].wait();
             }
-            this.sub_backs=[];
-            this.subFn={};
-            this.psubFn={};
+            this._sub_backs=[];
+            this._subFn={};
+            this._psubFn={};
         }
     }
     private after_unsub(){
-        if(Object.keys(this.subFn).length<1 && Object.keys(this.psubFn).length<1){
-            if(this.sub_backs.length>0){
-                this.sub_backs[this.sub_backs.length-1].wait();
+        if(Object.keys(this._subFn).length<1 && Object.keys(this._psubFn).length<1){
+            if(this._sub_backs.length>0){
+                this._sub_backs[this._sub_backs.length-1].wait();
                 this.after_unsub();
                 return;
             }
-            this.sub_backs=null;
-            this.subFn=null;
-            this.psubFn=null;
+            this._sub_backs=null;
+            this._subFn=null;
+            this._psubFn=null;
         }
     }
     private pre_sub_onConnect(){
-        var subFn=this.subFn;
-        var psubFn=this.psubFn;
+        var subFn=this._subFn;
+        var psubFn=this._psubFn;
         var had = (subFn && Object.keys(subFn).length>0) || (psubFn && Object.keys(psubFn).length>0);
-        this.sub_backs=null;
-        this.subFn=null;
-        this.psubFn=null;
+        this._sub_backs=null;
+        this._subFn=null;
+        this._psubFn=null;
         if(had){
             try{
                 if(subFn){
@@ -975,33 +1127,72 @@ class Redis {
                     }
                 }
             }catch (e) {
-                this.subFn=subFn;
-                this.psubFn=psubFn;
+                this._subFn=subFn;
+                this._psubFn=psubFn;
             }
         }
     }
-    private on_subReply(reply){
-        if(CmdMessage.compare(reply[0])==0){
+    private _on_subReply(reply){
+        if(!util.isArray(reply)){
+            if(RET_OK.compare(reply)==0){
+                this._sub_backs.shift().then(true);
+            }else if(RET_PONG.compare(reply)==0){
+                this._sub_backs.shift().then('PONG');
+            }
+        }else if(CmdMessage.compare(reply[0])==0){
             var channel=reply[1].toString();
-            this.subFn[channel].forEach(f=>{
+            this._subFn[channel].forEach(f=>{
                 f(reply[2], channel);
             })
         }else if(CmdPMessage.compare(reply[0])==0){
             var channel=reply[1].toString();
-            this.psubFn[channel].forEach(f=>{
+            this._psubFn[channel].forEach(f=>{
                 f(reply[2], channel);
             });
         }else{
             if(CmdUnSubscribe.compare(reply[0])==0){
-                this.sub_backs.shift().then(parseInt(reply[2].toString()));
+                this._sub_backs.shift().then(reply.length>2?parseInt(reply[2].toString()):0);
             }else if(CmdPUnSubscribe.compare(reply[0])){
-                this.sub_backs.shift().then(parseInt(reply[2].toString()));
-            }else if(CmdPong.compare(reply[0])==0){
-                this.sub_backs.shift().then('pong');
+                this._sub_backs.shift().then(reply.length>2?parseInt(reply[2].toString()):0);
+            }else if(RET_PONG.compare(reply[0])==0){
+                this._sub_backs.shift().then('pong');
             }else{
-                this.sub_backs.shift().then(reply);
+                this._sub_backs.shift().then(reply);
             }
         }
+    }
+    private _fix_prefix_str<T>(k:T):T{
+        if(!this._prefix.buf){
+            return k;
+        }
+        if(util.isArray(k)){
+            var b:Array<any>=<any>k;
+            b.forEach((k,i,a)=>{
+                a[i] = this._prefix.str+k;
+            });
+            return k;
+        }
+        return <any>this._prefix.str+k;
+    }
+    private _fix_prefix_any<T>(k:T):T {
+        if(!this._prefix.buf){
+            return k;
+        }
+        if(util.isArray(k)){
+            var b:Array<any>=<any>k;
+            b.forEach((k,i,a)=>{
+                if(util.isBuffer(k)){
+                    a[i] = Buffer.concat([this._prefix.buf,k]);
+                }else{
+                    a[i] = Buffer.from(this._prefix.str+k);
+                }
+            });
+            return k;
+        }
+        if(util.isBuffer(k)){
+            return <any>Buffer.concat([this._prefix.buf,k]);
+        }
+        return <any>Buffer.from(this._prefix.str+k);
     }
 }
 module.exports=Redis;
@@ -1215,6 +1406,9 @@ function encodeOneResp(command:Array<any>):Class_Buffer {
     ]);
 }
 
+const RET_PONG=Buffer.from('pong');
+const RET_OK=Buffer.from('OK');
+
 const CmdDump=Buffer.from('dump');
 const CmdTouch=Buffer.from('touch');
 const CmdMove=Buffer.from('move');
@@ -1228,7 +1422,7 @@ const CmdUnSubscribe=Buffer.from('unsubscribe');
 const CmdPUnSubscribe=Buffer.from('punsubscribe');
 const CmdMessage=Buffer.from('message');
 const CmdPMessage=Buffer.from('pmessage');
-const CmdPong=Buffer.from('pong');
+
 const CmdQuit=Buffer.from('quit');
 const CmdPing=Buffer.from('ping');
 const CmdEcho=Buffer.from('echo');
