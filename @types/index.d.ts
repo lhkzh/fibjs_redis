@@ -16,7 +16,8 @@ export class Redis {
         public prefix:string;//get set
 
         public rawCommand(cmd:string,...args):any;
-
+	
+	public pipeline(fn:(r:Redis)=>{}):Array<any>;
         public pipeOpen():Redis;//开启命令缓存-仅针对当前Fiber调用(开启后未提交时不影响其他Fiber使用)
         public pipeSubmit(throwIfHappenErr?:boolean):Array<any>;//提交命令缓存
         public multi():Redis;//开启事物
@@ -145,7 +146,7 @@ export class Redis {
         public sInterStore(key:string|Class_Buffer, ...keys):number;
         public sUnion(keys:Array<string|Class_Buffer>, castFn?:Function):Array<string|number|Class_Buffer|null>;
         public sUnionStore(destKey:string|Class_Buffer, ...keys):number;
-        public sMembers(keys:Array<string|Class_Buffer>, castFn?:Function):Array<string|number|Class_Buffer|null>;
+        public sMembers(keys:string|Class_Buffer, castFn?:Function):Array<string|number|Class_Buffer|null>;
         public sMove(sourceKey:string|Class_Buffer, destKey:string|Class_Buffer, member:any):number;
 
         public zAdd(key:string|Class_Buffer, sms:{[index:string]:number}|Array<any>, opts?:Array<string>):number;

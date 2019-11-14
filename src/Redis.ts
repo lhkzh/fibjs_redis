@@ -51,6 +51,9 @@ class Redis {
                 var tag=String(query.autoReconnect).toLowerCase();
                 autoReconnect=tag!="0"&&tag!="false"&&tag!="no"&&tag!="";
             }
+            if(query.prefix){
+                this.prefix=String(query.prefix).trim();
+            }
         }
         this._opts={db:initDb, timeout:timeout,autoReconnect:autoReconnect, auth:auth, host:host,port:port,};
         this._onOpen = new coroutine.Event(false);
@@ -113,7 +116,7 @@ class Redis {
                     self._parser.execute(buf);
                 }catch (e) {
                     if(!self._killed){
-                        console.error("xredis.on_read",e);
+                        console.error("Redis|on_read",e);
                         self._on_err(e);
                     }
                     break;
@@ -167,7 +170,7 @@ class Redis {
                     this._do_conn();
                     break;
                 }catch (e) {
-                    console.error(this._opts.host+":"+this._opts.port, e);
+                    console.error("Redis|%s",this._opts.host+":"+this._opts.port, e);
                 }
                 i++;
                 coroutine.sleep(Math.min(i*5,500));
@@ -314,6 +317,11 @@ class Redis {
             });
             return a;
         });
+    }
+    public pipeline(fn:(r:Redis)=>{}){
+        this.pipeOpen();
+        fn(this);
+        return this.pipeSubmit();
     }
     public pipeOpen(){
         if(this._mult_backs || this._sub_backs){
