@@ -1,4 +1,3 @@
-/// <reference types="@fibjs/types" />
 /**
  * 使用fibjs实现的Redis客户端。
  * 支持 pipeline、mult/exec、pub/sub、以及redis4.0的api。
@@ -10,16 +9,16 @@
 export class Redis {
         public bufSize:number;//socket读取数据recv大小，默认255
         public waitReconnect:boolean;//发送指令时,如果在重连中是否等待重连，默认true
-        //  redis://127.0.0.1:6379   redis://authkey@127.0.0.1:6379?db=1&timeout=3000&autoReconnect=true
+        //  redis://127.0.0.1:6379   redis://authkey@127.0.0.1:6379?db=1&timeout=3000&autoReconnect=true&prefix=app:
         constructor(url:string/*="redis://127.0.0.1:6379"*/, autoReconnect?:boolean/*=true*/);
 
         public prefix:string;//get set
 
         public rawCommand(cmd:string,...args):any;
-	
-	public pipeline(fn:(r:Redis)=>{}):Array<any>;
+
         public pipeOpen():Redis;//开启命令缓存-仅针对当前Fiber调用(开启后未提交时不影响其他Fiber使用)
         public pipeSubmit(throwIfHappenErr?:boolean):Array<any>;//提交命令缓存
+        public pipeline(fn:(r:Redis)=>{}):Array<any>;//命令缓存批量提交方式执行
         public multi():Redis;//开启事物
         public exec():Array<any>;//提交事物
 
@@ -149,13 +148,17 @@ export class Redis {
         public sMembers(keys:string|Class_Buffer, castFn?:Function):Array<string|number|Class_Buffer|null>;
         public sMove(sourceKey:string|Class_Buffer, destKey:string|Class_Buffer, member:any):number;
 
-        public zAdd(key:string|Class_Buffer, sms:{[index:string]:number}|Array<any>, opts?:Array<string>):number;
+        //opts = [NX|XX] [CH] [INCR]
+        public zAdd(key:string|Class_Buffer, opts:string[], ...score2members):number;
+        public zAddByKV(key:string|Class_Buffer, sms:{[index:string]:number}, opts?:Array<string>):number;
+        public zAddOne(key:string|Class_Buffer, member:any, score:number, opts?:Array<string>):number;
+        public zIncrBy(key:string|Class_Buffer, member:any, increment:number):number;
         public zCard(key:string|Class_Buffer):number;
         public zCount(key:string|Class_Buffer, min:string|number, max:string|number):number;
         public zLexCount(key:string|Class_Buffer, min:string|number, max:string|number):number;
-        public zIncrBy(key:string|Class_Buffer, member:any, increment:number):number;
         public zScore(key:string|Class_Buffer, member:any):number;
         public zRank(key:string|Class_Buffer, member:any):number;
+        public zRevRank(key:string|Class_Buffer, member:any):number;
         public zRem(key:string|Class_Buffer, ...members):number;
         public zRemByLex(key:string|Class_Buffer, min:string|number, max:string|number):number;
         public zRemByScore(key:string|Class_Buffer, min:string|number, max:string|number):number;

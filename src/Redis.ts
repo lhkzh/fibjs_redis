@@ -857,14 +857,35 @@ class Redis {
         keys=this._fix_prefix_any(keys);
         return this.send(CmdSmove, ...keys, member).wait(castNumber);
     }
-
-    public zAdd(key:string|Class_Buffer, sms:{[index:string]:number}|Array<any>, opts?:Array<string>){
+    //opts = [NX|XX] [CH] [INCR]
+    public zAdd(key:string|Class_Buffer, opts:string[], ...score2members):number{
         key=this._fix_prefix_any(key);
-        var smsArr:Array<any>=Array.isArray(sms)?sms:toZsetArray(sms,[]);
-        if(!opts){
-            opts=[];
+        var smsArr:Array<any>=score2members;
+        if(!opts || opts.length<1){
+            return this.send(CmdZadd, key, ...smsArr).wait(castNumber);
         }
         return this.send(CmdZadd, key, opts.join(''), ...smsArr).wait(castNumber);
+    }
+    //opts = [NX|XX] [CH] [INCR]
+    public zAddByKV(key:string|Class_Buffer, sms:{[index:string]:number}, opts?:Array<string>){
+        key=this._fix_prefix_any(key);
+        var smsArr:Array<any>=toZsetArray(sms,[]);
+        if(!opts || opts.length<1){
+            return this.send(CmdZadd, key, ...smsArr).wait(castNumber);
+        }
+        return this.send(CmdZadd, key, opts.join(''), ...smsArr).wait(castNumber);
+    }
+    //opts = [NX|XX] [CH] [INCR]
+    public zAddOne(key:string|Class_Buffer, member:any, score:number, opts?:Array<string>){
+        key=this._fix_prefix_any(key);
+        if(!opts || opts.length<1){
+            return this.send(CmdZadd, key, score, member).wait(castNumber);
+        }
+        return this.send(CmdZadd, key, opts.join(''), score, member).wait(castNumber);
+    }
+    public zIncrBy(key:string|Class_Buffer, member:any, increment:number, castFn=castNumber){
+        key=this._fix_prefix_any(key);
+        return this.send(CmdZincrBy, key, increment, member).wait(castFn);
     }
     public zCard(key:string|Class_Buffer){
         key=this._fix_prefix_any(key);
@@ -878,10 +899,6 @@ class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdZlexcount, key, min, max).wait(castNumber);
     }
-    public zIncrBy(key:string|Class_Buffer, member:any, increment:number, castFn=castNumber){
-        key=this._fix_prefix_any(key);
-        return this.send(CmdZincrBy, key, increment, member).wait(castFn);
-    }
     public zScore(key:string|Class_Buffer, member:any, castFn=castNumber){
         key=this._fix_prefix_any(key);
         return this.send(CmdZscore, key, member).wait(castFn);
@@ -889,6 +906,10 @@ class Redis {
     public zRank(key:string|Class_Buffer, member:any){
         key=this._fix_prefix_any(key);
         return this.send(CmdZrank, key, member).wait(castNumber);
+    }
+    public zRevRank(key:string|Class_Buffer, member:any){
+        key=this._fix_prefix_any(key);
+        return this.send(CmdZrevRank, key, member).wait(castNumber);
     }
     public zRem(key:string|Class_Buffer, ...members){
         key=this._fix_prefix_any(key);
@@ -912,19 +933,19 @@ class Redis {
         }
         var r=this.send(...args).wait();
         var list=[];
-        if(scorePv==1){
-            for(var i=0;i<r.length;i+=2){
-                var member=r[i].toString();
-                var score=Number(r[i+1].toString());
-                list.push({member:member,score:score});
-            }
-        }else{
-            for(var i=0;i<r.length;i+=2){
-                var member=r[i+1].toString();
-                var score=Number(r[i].toString());
-                list.push({member:member,score:score});
-            }
+        // if(scorePv==1){
+        for(var i=0;i<r.length;i+=2){
+            var member=r[i].toString();
+            var score=Number(r[i+1].toString());
+            list.push({member:member,score:score});
         }
+        // }else{
+        //     for(var i=0;i<r.length;i+=2){
+        //         var member=r[i+1].toString();
+        //         var score=Number(r[i].toString());
+        //         list.push({member:member,score:score});
+        //     }
+        // }
         return list;
     }
     public zPopMin(key:string|Class_Buffer, num:number=1, castFn=castStrs){
@@ -941,7 +962,7 @@ class Redis {
     }
     public zRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
         key=this._fix_prefix_any(key);
-        return this._z_act(castFn, -1, [CmdZrange, key, start, stop]);
+        return this._z_act(castFn, 1, [CmdZrange, key, start, stop, "WITHSCORES"]);
     }
     public zRevRange(key:string|Class_Buffer, start:number, stop:number, withScore?:boolean, castFn=castStrs){
         key=this._fix_prefix_any(key);
@@ -949,23 +970,29 @@ class Redis {
     }
     public zRevRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
         key=this._fix_prefix_any(key);
-        return this._z_act(castFn, -1, [CmdZrevRange, key, start, stop]);
+        return this._z_act(castFn, 1, [CmdZrevRange, key, start, stop, "WITHSCORES"]);
     }
     public zRangeByScore(key:string|Class_Buffer, min:number, max:number, opts:{withScore?:boolean, limit?:{offset:number,count:number}}={withScore:false}, castFn=castStrs){
         key=this._fix_prefix_any(key);
-        var args = [CmdZrangeByScore, key, min, max];
+        var args = [CmdZrangeByScore, key, Math.min(min,max), Math.max(min,max)];
         if(opts.limit){
             args.push('LIMIT',opts.limit.offset,opts.limit.count);
         }
-        return this._z_act(castFn, opts.withScore?-1:0, args);
+        if(opts.withScore){
+            args.push("WITHSCORES");
+        }
+        return this._z_act(castFn, opts.withScore?1:0, args);
     }
     public zRevRangeByScore(key:string|Class_Buffer, min:number, max:number, opts:{withScore?:boolean, limit?:{offset:number,count:number}}={withScore:false}, castFn=castStrs){
         key=this._fix_prefix_any(key);
-        var args = [CmdZrevrangeByScore, key, min, max];
+        var args = [CmdZrevrangeByScore, key, Math.max(min,max), Math.min(min,max)];
         if(opts.limit){
             args.push('LIMIT',opts.limit.offset,opts.limit.count);
         }
-        return this._z_act(castFn, opts.withScore?-1:0, args);
+        if(opts.withScore){
+            args.push("WITHSCORES");
+        }
+        return this._z_act(castFn, opts.withScore?1:0, args);
     }
     public bzPopMin(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn=castStr){
         key=this._fix_prefix_any(key);
@@ -1528,6 +1555,7 @@ const CmdZlexcount=Buffer.from('zlexcount');
 const CmdZincrBy=Buffer.from('zincrby');
 const CmdZscore=Buffer.from('zscore');
 const CmdZrank=Buffer.from('zrank');
+const CmdZrevRank=Buffer.from('zrevrank');
 const CmdZrem=Buffer.from('zrem');
 const CmdZremRangeByLex=Buffer.from('zremrangebylex');
 const CmdZremRangeByScore=Buffer.from('zrangebyscore');
