@@ -12,12 +12,13 @@ import util=require('util');
 /**
  * Redis client
  */
-class Redis {
+export class Redis {
     public bufSize=255;//socket读取数据recv大小
     public waitReconnect=true;//发送指令时,如果在重连中是否等待重连
     private _prefix:{str:string,buf:Class_Buffer}={str:"",buf:null};
     private _opts:{db:number, timeout:number, host:string,port:number,auth:string,autoReconnect:boolean};
     private _parser;
+    private _sender:Class_Fiber;
     private _reader:Class_Fiber;
     private _socket:Class_Socket;
     private _onOpen:Class_Event;
@@ -28,6 +29,8 @@ class Redis {
     private _subFn:{[index:string]:Array<Function>};//subscribe
     private _psubFn:{[index:string]:Array<Function>};//psubscribe
     private _sub_backs:Array<OptEvent>;//subscribe_cmd_handler
+    private _cache_cmds=[];
+    private _step:number=0;
     constructor(url:string="redis://127.0.0.1:6379"){
         var urlObj=Url.parse(url);
         var host=urlObj.hostname;
@@ -82,16 +85,72 @@ class Redis {
         // this.stream=buf;
         this._backs=[];
         this._connected=true;
-        let self=this;
-        self._parser = new RedisParser({
+        this._pre_Fibers();
+        this.pre_sub_onConnect();
+        this._onOpen.set();
+    }
+    private _pre_Fibers(){
+        let T=this;
+        T._socket.timeout=-1;
+        T._sender = coroutine.start(function(){
+            let self=T,sock=self._socket;
+            while(self._socket===sock && self._connected){
+                if(self._cache_cmds.length>0){
+                    var tcs=self._cache_cmds;
+                    try{
+                        sock.send(tcs.length==1?tcs[0]:Buffer.concat(tcs));
+                        self._cache_cmds.length=0;
+                    }catch (e) {
+                        self._on_err(e, true);
+                        break;
+                    }
+                }else{
+                    coroutine.sleep();
+                }
+            }
+        });
+        T._reader = coroutine.start(function () {
+            var buf=null;
+            let self=T,
+                sock=self._socket,
+                parser=self._parser,
+                step=self._step,
+                bufSize=self.bufSize;
+            while (self._socket===sock && self._connected){
+                try{
+                    buf=sock.recv(bufSize);
+                    if(buf==null){
+                        self._on_lost();
+                        break;
+                    }
+                    if(self._step!=step || self._socket!=sock){
+                        continue;
+                    }
+                    parser.execute(buf);
+                }catch (e) {
+                    if(!self._killed){
+                        console.error("Redis|on_read",e);
+                        self._on_err(e);
+                    }
+                    break;
+                }
+            }
+        });
+        var self=T, step=self._step;
+        T._parser = new RedisParser({
             returnBuffers:true,
             optionStringNumbers:true,
             returnReply: reply => {
                 // console.log("--->>>",reply.toString())
-                if(self._sub_backs){
-                    self._on_subReply(reply);
-                }else{
-                    self._backs.shift().then(reply);
+                try{
+                    if(self._sub_backs){
+                        self._on_subReply(reply);
+                    }else{
+                        self._backs.shift().then(reply);
+                    }
+                }catch(exx){
+                    console.error("--->>>", self._step==step,(reply||"null").toString(),exx)
+                    console.error("Redis|on_reply",exx);
                 }
             },
             returnError: error => {
@@ -102,29 +161,6 @@ class Redis {
                 }
             }
         });
-        sock.timeout=-1;
-        self._reader = coroutine.start(function () {
-            var buf=null;
-            var sock=self._socket;
-            while (self._connected){
-                try{
-                    buf=sock.recv(self.bufSize);
-                    if(buf==null){
-                        self._on_lost();
-                        break;
-                    }
-                    self._parser.execute(buf);
-                }catch (e) {
-                    if(!self._killed){
-                        console.error("Redis|on_read",e);
-                        self._on_err(e);
-                    }
-                    break;
-                }
-            }
-        });
-        this.pre_sub_onConnect();
-        self._onOpen.set();
     }
     private _pre_command(sock:Class_Socket,buf:Class_BufferedStream, ...args){
         // buf.write(commandToResp(args));
@@ -146,12 +182,17 @@ class Redis {
         if(this._socket==null){
             return;
         }
+        this._step++;
+        if(this._step>0x0FFFFFFFFFFFFF){
+            this._step=0;
+        }
         try{
             this._socket.close();
         }catch (e) {
         }
         this._connected=false;
         this._onOpen.clear();
+        this._cache_cmds.length=0;
         var backs=this._backs;this._backs=[];
         backs.forEach(operation=>{
             operation.fail(e);
@@ -171,6 +212,10 @@ class Redis {
                     break;
                 }catch (e) {
                     console.error("Redis|%s",this._opts.host+":"+this._opts.port, e);
+                    try{
+                        this._socket.close();
+                    }catch (e) {
+                    }
                 }
                 i++;
                 coroutine.sleep(Math.min(i*5,500));
@@ -192,7 +237,7 @@ class Redis {
             operation.fail(e);
         });
     }
-    private _temp_cmds=[];
+    private _temp_cmds:Class_Buffer[]=[];
     private send(...args){
         var pipe = PipeWrap.get();
         if(pipe){
@@ -228,16 +273,12 @@ class Redis {
         }
         var evt=new OptEvent();
         backs.push(evt);
-        var tmpcmds=this._temp_cmds;
         try{
-            this._socket.send(tmpcmds.length==1?tmpcmds[0]:Buffer.concat(tmpcmds));
-        }catch (e) {
-            this._on_err(e, true);
-            throw e;
+            return evt.wait(convert);
         }finally {
-            tmpcmds.length=0;
+            this._cache_cmds.push(...this._temp_cmds);
+            this._temp_cmds.length=0;
         }
-        return evt.wait(convert);
     }
     public rawCommand(cmd:string,...args){
         // console.log("...>",cmd,...args);
@@ -249,9 +290,11 @@ class Redis {
     public quit():boolean{
         var t=this.send(CmdQuit);
         t._killed=true;
-        var r = t.wait(castBool);
-        t.close();
-        return r;
+        try{
+            return t.wait(castBool);
+        }finally {
+            t.close();
+        }
     }
     public echo(s:string):string{
         return this.send(CmdEcho, s).wait(castStr);
@@ -318,7 +361,7 @@ class Redis {
             return a;
         });
     }
-    public pipeline(fn:(r:Redis)=>{}){
+    public pipeline(fn:(r:Redis)=>void){
         this.pipeOpen();
         fn(this);
         return this.pipeSubmit();
@@ -1229,8 +1272,17 @@ class Redis {
         }
         return <any>Buffer.from(this._prefix.str+k);
     }
+
+    public static castBool:(bufs:any)=>any;
+    public static castAuto:(bufs:any)=>any;
+    public static castStr:(bufs:any)=>any;
+    public static castStrs:(bufs:any)=>any;
+    public static castNumber:(bufs:any)=>any;
+    public static castNumbers:(bufs:any)=>any;
+
+    public static castBigInt:(bufs:any)=>any;
+    public static castBigInts:(bufs:any)=>any;
 }
-module.exports=Redis;
 class PipeWrap {
     //请求命令缓存
     public commands:Array<Class_Buffer>=[];//pipeline_command_cache
@@ -1238,10 +1290,10 @@ class PipeWrap {
     public casts:Array<Function>=[];//pipeline_convert
 
     public static has(){
-        return coroutine.current()[PipeWrap.KEY]!=null;
+        return coroutine.current().hasOwnProperty(PipeWrap.KEY);
     }
     public static start(){
-        if(!coroutine.current()[PipeWrap.KEY]){
+        if(!coroutine.current().hasOwnProperty(PipeWrap.KEY)){
             coroutine.current()[PipeWrap.KEY]=new PipeWrap();
         }
         return coroutine.current()[PipeWrap.KEY];
@@ -1254,7 +1306,7 @@ class PipeWrap {
         delete coroutine.current()[PipeWrap.KEY];
         return v;
     }
-    public static KEY = Symbol("redis_pipe");
+    public static KEY = "$redis_pipe";
 }
 class OptEvent{
     protected evt:Class_Event;
@@ -1282,7 +1334,7 @@ class OptEvent{
 class PipelineOptEvent extends OptEvent{
     protected evt:Class_Event;
     protected fns:Array<Function>;
-    protected rets:Array<Function>;
+    protected rets:Array<any>;
     protected errs:Array<any>;
     public constructor(fns:Array<Function>){
         super();
@@ -1341,9 +1393,15 @@ function castStr(buf:any) {
     return buf ? buf.toString():null;
 }
 function castStrs(bufs) {
-    bufs.forEach((v,k,a)=>{
-        a[k]=v?v.toString():v;
-    });
+    try{
+        bufs.forEach((v,k,a)=>{
+            a[k]=v?v.toString():v;
+        });
+    }catch (e) {
+        console.log(typeof bufs, bufs)
+        throw e;
+    }
+
     return bufs;
 }
 function deepCastStrs(r:Array<any>){
@@ -1371,6 +1429,14 @@ function castBigInt(buf:any) {
         buf=global["BigInt"](buf.toString());
     }
     return buf;
+}
+function castBigInts(bufs){
+    bufs.forEach((v, k, a) => {
+        if (v != null) {
+            a[k] = global["BigInt"](v.toString());
+        }
+    });
+    return bufs;
 }
 function castNumbers(bufs) {
     bufs.forEach((v, k, a) => {
@@ -1407,6 +1473,7 @@ Redis["castStrs"]=castStrs;
 Redis["castNumber"]=castNumber;
 Redis["castNumbers"]=castNumbers;
 Redis["castBigInt"]=castBigInt;
+Redis["castBigInts"]=castBigInts;
 Redis["castBool"]=castBool;
 
 

@@ -1,8 +1,8 @@
 {
   "name": "fibjs_redis",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "",
-  "main": "./lib/Redis.js",
+  "main": "./lib/index.js",
   "types": "./@types/index.d.ts",
   "private": false,
   "author": "",
