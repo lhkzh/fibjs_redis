@@ -149,15 +149,20 @@ export class Redis {
                         self._backs.shift().then(reply);
                     }
                 }catch(exx){
-                    console.error("--->>>", self._step==step,(reply||"null").toString(),exx)
+                    // console.error("--->>>", self._step==step,(reply||"null").toString(),exx)
                     console.error("Redis|on_reply",exx);
                 }
             },
             returnError: error => {
-                if (self._sub_backs) {
-                    self._sub_backs.shift().fail(error);
-                }else{
-                    self._backs.shift().fail(error);
+                try{
+                    if (self._sub_backs) {
+                        self._sub_backs.shift().fail(error);
+                    }else{
+                        self._backs.shift().fail(error);
+                    }
+                }catch(exx){
+                    // console.error("--->>>", self._step==step,(reply||"null").toString(),exx)
+                    console.error("Redis|on_reply",exx);
                 }
             }
         });
@@ -1393,15 +1398,9 @@ function castStr(buf:any) {
     return buf ? buf.toString():null;
 }
 function castStrs(bufs) {
-    try{
-        bufs.forEach((v,k,a)=>{
-            a[k]=v?v.toString():v;
-        });
-    }catch (e) {
-        console.log(typeof bufs, bufs)
-        throw e;
-    }
-
+    bufs.forEach((v,k,a)=>{
+        a[k]=v?v.toString():v;
+    });
     return bufs;
 }
 function deepCastStrs(r:Array<any>){
