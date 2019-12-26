@@ -29,7 +29,7 @@ export class Redis {
     private _subFn:{[index:string]:Array<Function>};//subscribe
     private _psubFn:{[index:string]:Array<Function>};//psubscribe
     private _sub_backs:Array<OptEvent>;//subscribe_cmd_handler
-    private _cache_cmds=[];
+    private _waitWrite:{cmds:Class_Buffer[], event:Class_Event};
     private _step:number=0;
     constructor(url:string="redis://127.0.0.1:6379"){
         var urlObj=Url.parse(url);
@@ -60,6 +60,10 @@ export class Redis {
         }
         this._opts={db:initDb, timeout:timeout,autoReconnect:autoReconnect, auth:auth, host:host,port:port,};
         this._onOpen = new coroutine.Event(false);
+        this._waitWrite = {
+            cmds:[],
+            event: new coroutine.Event(false)
+        }
         this._do_conn();
     }
     public get prefix():string{
@@ -93,19 +97,21 @@ export class Redis {
         let T=this;
         T._socket.timeout=-1;
         T._sender = coroutine.start(function(){
-            let self=T,sock=self._socket;
+            let self=T,sock=self._socket, buf:Class_Buffer,
+                tcs=self._waitWrite.cmds, evt=self._waitWrite.event;
             while(self._socket===sock && self._connected){
-                if(self._cache_cmds.length>0){
-                    var tcs=self._cache_cmds;
+                if(tcs.length>0){
+                    buf = tcs.length==1?tcs[0]:Buffer.concat(tcs);
+                    tcs.length=0;
                     try{
-                        sock.send(tcs.length==1?tcs[0]:Buffer.concat(tcs));
-                        self._cache_cmds.length=0;
+                        sock.send(buf);
                     }catch (e) {
                         self._on_err(e, true);
                         break;
                     }
                 }else{
-                    coroutine.sleep();
+                    evt.clear();
+                    evt.wait();
                 }
             }
         });
@@ -197,7 +203,8 @@ export class Redis {
         }
         this._connected=false;
         this._onOpen.clear();
-        this._cache_cmds.length=0;
+        this._waitWrite.cmds.length=0;
+        this._waitWrite.event.set();
         var backs=this._backs;this._backs=[];
         backs.forEach(operation=>{
             operation.fail(e);
@@ -278,12 +285,10 @@ export class Redis {
         }
         var evt=new OptEvent();
         backs.push(evt);
-        try{
-            return evt.wait(convert);
-        }finally {
-            this._cache_cmds.push(...this._temp_cmds);
-            this._temp_cmds.length=0;
-        }
+        this._waitWrite.cmds.push(...this._temp_cmds);
+        this._temp_cmds.length=0;
+        this._waitWrite.event.set();
+        return evt.wait(convert);
     }
     public rawCommand(cmd:string,...args){
         // console.log("...>",cmd,...args);
