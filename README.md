@@ -10,7 +10,10 @@ fibjs redis
 
  ` npm -i fibjs_redis `
 
-const Redis=require("fibjs_redis");  
+typescript  
+import {Redis} from "fibjs_redis";  
+
+const Redis=require("fibjs_redis").Redis;  
 var r = new Redis();  
 console.log(r.ping());  
 r.set("hi","hello fibjs!", 1);  

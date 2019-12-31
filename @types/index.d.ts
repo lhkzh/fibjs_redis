@@ -8,4 +8,6 @@
  *   3. sub系列  开启(p)subscribe后禁用大多数api方法了
  */
 import {Redis} from "../src/Redis";
-export=Redis
+export{
+    Redis
+}
