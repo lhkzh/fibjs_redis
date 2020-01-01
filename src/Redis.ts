@@ -249,23 +249,25 @@ export class Redis {
             operation.fail(e);
         });
     }
+    private beforeSend(){
+        if(this._killed){
+            throw new RedisError("io_had_closed");
+        }
+        if(!this._connected && this._opts.autoReconnect){
+            if(this.waitReconnect){
+                this._onOpen.wait();//等待重连
+            }
+        }
+        if(!this._socket || !this._connected){
+            throw new RedisError("io_error");
+        }
+    }
     private _temp_cmds:Class_Buffer[]=[];
     private send(...args){
         var pipe = PipeWrap.get();
         if(pipe){
             pipe.commands.push(encodeCommand(args));
         }else{
-            if(this._killed){
-                throw new RedisError("io_had_closed");
-            }
-            if(!this._connected && this._opts.autoReconnect){
-                if(this.waitReconnect){
-                    this._onOpen.wait();//等待重连
-                }
-            }
-            if(!this._socket || !this._connected){
-                throw new RedisError("io_error");
-            }
             this._temp_cmds.push(encodeCommand(args));
         }
         return this;
@@ -283,6 +285,7 @@ export class Redis {
             this._mult_backs.push(convert);
             convert=castStr;
         }
+        this.beforeSend();
         var evt=new OptEvent();
         backs.push(evt);
         this._waitWrite.cmds.push(...this._temp_cmds);
@@ -393,19 +396,13 @@ export class Redis {
         if(pipe.commands.length==0){
             return [];
         }
-        if(!this._connected && this._opts.autoReconnect && !this._killed){
-            this._onOpen.wait();//重连
-        }
+        this.beforeSend();
         var events = new PipelineOptEvent(pipe.casts);
         pipe.casts.forEach(e=>{
             this._backs.push(events);
         });
-        try{
-            this._socket.send(Buffer.concat(pipe.commands));
-        }catch (e) {
-            this._on_err(e, true);
-            throw e;
-        }
+        this._waitWrite.cmds.push(Buffer.concat(pipe.commands));
+        this._waitWrite.event.set();
         return events.waitAll(true);
     }
 
