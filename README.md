@@ -27,3 +27,18 @@ console.log(typeof r.incr("anum"));//number
 console.log(typeof r.incr("anum", Redis.castBigInt));//BigInt  
 
 
+redis-pipeline  
+var pipe = redis.pipeOpen();  
+pipe.set("foo","foo",3);  
+pipe.get("foo);  
+var arr = pipe.pipeSubmit();  
+console.log(typeof arr, ...arr);  
+//或者
+var arr=redis.pipeline(pipe=>{  
+    pipe.set("foo","foo",3);   
+    pipe.get("foo);   
+});  
+console.log(typeof arr, ...arr);  
+
+
+
