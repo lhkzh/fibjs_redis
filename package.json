@@ -1,6 +1,6 @@
 {
   "name": "fibjs_redis",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "",
   "main": "./lib/index.js",
   "types": "./@types/index.d.ts",
@@ -10,7 +10,7 @@
   "license": "ISC",
   "dependencies": {},
   "devDependencies": {
-    "@fibjs/types": "^0.28.0"
+    "@fibjs/types": "^0.29.0"
   },
   "peerDependencies": {}
 }
