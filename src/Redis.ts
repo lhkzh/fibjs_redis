@@ -406,10 +406,10 @@ export class Redis {
         var args = option&&option.length>0 ? [CmdInfo, option]:[CmdInfo];
         return this.send(...args).wait(castStr);
     }
-    public client(subCommand:string):string{
-        return this.send(CmdClient, subCommand).wait(castStr);
+    public client(subCommand:string, ...args):string{
+        return this.send(CmdClient, subCommand, ...args).wait(castStr);
     }
-    public time():number{
+    public time():number[]{
         return this.send(CmdTime).wait(castNumbers);
     }
     public slowlog(subCommand, ...subArgs){
