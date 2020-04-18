@@ -1,5 +1,5 @@
 var coroutine=require("coroutine");
-var Redis=require("../dist/Redis");
+var Redis=require("../lib/Redis").Redis;
 var r = new Redis();
 console.log("ping",r.ping()=="PONG");
 console.log("set",r.set("foo","data-foo",30)==true);
@@ -51,6 +51,7 @@ console.log("smembers",r.sMembers('fset').length==6);
 console.log("sIsmember",r.sIsmember('fset',"a")==false);
 console.log("sIsmember",r.sIsmember('fset',"1")==true);
 console.log("spop",r.sPop('fset',1)!=null);
+console.log("sscan",r.sscan("fset","0","*",100))
 r.del('fset');
 console.log();
 

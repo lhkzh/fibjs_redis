@@ -43,13 +43,13 @@ class RespReader {
                     handler.replyData(Number(line.substr(1)));
                 }else if(line[0]=='$'){
                     let raw = self.readBulkStr(reader, Number(line.substr(1)));
-                    if(raw==null){
+                    if(raw===0){
                         !self.killed && coroutine.start(handler.onClose);
                         break;
                     }
                     handler.replyData(raw);
                 }else if(line[0]=='*'){
-                    let len = Number(line.substr(1)), arr=new Array(len), subLine:string,subRaw;
+                    let len = Number(line.substr(1)), arr=new Array(len), subLine:string,subRaw,subLine0:string;
                     for(var i=0;i<len;i++){
                         subLine=reader.readLine();
                         // console.log(len,i,subLine.length,subLine)
@@ -57,26 +57,55 @@ class RespReader {
                             !self.killed && coroutine.start(handler.onClose);
                             break M;
                         }
-                        if(i==2 && subLine.charAt(0)==':'/* && len==3*/){//pubsub
-                            arr[i]=Number(subLine.substr(1));
-                            break;
-                        }else{
+                        subLine0=subLine.charAt(0);
+                        if(subLine0=='$'){
                             subRaw=self.readBulkStr(reader, Number(subLine.substr(1)));
-                            if(subRaw==null){
+                            // console.log("subRaw",subRaw)
+                            if(subRaw===0){
                                 !self.killed && coroutine.start(handler.onClose);
                                 break M;
                             }
                             arr[i]=subRaw;
+                        }else if(subLine0==':'){
+                            arr[i]=Number(subLine.substr(1));
+                        }else if(subLine0=='*'){
+                            let subNum = Number(subLine.substr(1)), subArr=new Array(subNum);
+                            arr[i]=subArr;
+                            for(var j=0;j<subNum;j++){
+                                subLine=reader.readLine();
+                                // console.log(subNum,j,subLine.length,subLine)
+                                if(subLine==null){
+                                    !self.killed && coroutine.start(handler.onClose);
+                                    break M;
+                                }
+                                if(subLine.charAt(0)=='$'){
+                                    subRaw=self.readBulkStr(reader, Number(subLine.substr(1)));
+                                    if(subRaw===0){
+                                        !self.killed && coroutine.start(handler.onClose);
+                                        break M;
+                                    }
+                                    subArr[j]=subRaw;
+                                }else if(subLine.charAt(0)=='*'){
+                                    subArr[j]=Number(subLine.substr(1));
+                                }else if(subLine.charAt(0)=='+'){
+                                    subArr[j]=subLine.substr(1);
+                                }else{
+                                    console.warn("RESP_UNKNOW_SUB_OPT__2:"+subLine);
+                                }
+                            }
+                        }else if(subLine0=='+'){
+                            arr[i]=subLine.substr(1);
+                        }else{
+                            console.warn("RESP_UNKNOW_SUB_OPT:"+subLine);
                         }
                     }
-                    // console.log(arr)
                     handler.replyData(arr);
+                }else if(line[0]==':'){
+                    handler.replyData(Number(line.substr(1)))
                 }else if(line[0]=='-'){
                     handler.replyError(line.substr(1));
                 }else{
                     console.error("RESP_unknow_protocol",line.length,line);
-                    // !self.killed && coroutine.start(handler.onClose);
-                    // break M;
                 }
             }catch (e) {
                 if(!self.killed){
@@ -89,11 +118,14 @@ class RespReader {
             }
         }
     }
-    private readBulkStr(reader:Class_BufferedStream,n:number):Class_Buffer{
+    private readBulkStr(reader:Class_BufferedStream,n:number):any{
+        if(n<0){
+            return null;
+        }
         let b=reader.read(n);
         // console.log("readBulkStr",n,b);
         if(b==null){
-            return null;
+            return 0;
         }
         while(b.length<n){
             var t = reader.read(n-b.length);
@@ -103,7 +135,7 @@ class RespReader {
             b=Buffer.concat([b,t]);
         }
         if(reader.readLine()==null){
-            return null;
+            return 0;
         }
         return b;
     }
@@ -324,6 +356,7 @@ export class Redis {
         var sock=this._socket;
         this._socket=null;
         this._sendEvt.set();
+        this._reader&&this._reader.kill();
         try{
             sock.close();
         }catch (e) {
