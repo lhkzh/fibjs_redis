@@ -1,6 +1,4 @@
 /// <reference types="@fibjs/types" />
-import {RedisError} from "redis-errors";
-import RedisParser = require('redis-parser');
 
 import net=require("net");
 import io=require("io");
@@ -9,25 +7,128 @@ import QueryString = require('querystring');
 import coroutine=require("coroutine");
 import util=require('util');
 
+export class RedisError extends Error{
+    get name () {
+        return this.constructor.name
+    }
+}
+class RespReader {
+    private sock:Class_Socket;
+    private killed:boolean;
+    private handler:{check:(sock:Class_Socket)=>boolean, onClose:()=>void, onErr:(e)=>void, replyError:(s:string)=>void, replyData:(d:any)=>void};
+    constructor(sock:Class_Socket, handler:{check:(sock:Class_Socket)=>boolean, onClose:()=>void, onErr:(e)=>void, replyError:(s:string)=>void, replyData:(d:any)=>void}) {
+        this.sock=sock;
+        this.handler=handler;
+    }
+    public kill(){
+        this.killed=true;
+    }
+    public run(){
+        coroutine.start(this.read.bind(this));
+    }
+    private read(){
+        let self=this,handler=self.handler,sock=self.sock,reader=new io.BufferedStream(sock),line:string;
+        reader.EOL='\r\n';
+        M:while (!self.killed && handler.check(sock)){
+            try{
+                line=reader.readLine();
+                // console.log("line...",line)
+                if(line==null){
+                    !self.killed && coroutine.start(handler.onClose);
+                    break;
+                }
+                if(line[0]=='+'){
+                    handler.replyData(line.substr(1));
+                }else if(line[0]==':'){
+                    handler.replyData(Number(line.substr(1)));
+                }else if(line[0]=='$'){
+                    let raw = self.readBulkStr(reader, Number(line.substr(1)));
+                    if(raw==null){
+                        !self.killed && coroutine.start(handler.onClose);
+                        break;
+                    }
+                    handler.replyData(raw);
+                }else if(line[0]=='*'){
+                    let len = Number(line.substr(1)), arr=new Array(len), subLine:string,subRaw;
+                    for(var i=0;i<len;i++){
+                        subLine=reader.readLine();
+                        // console.log(len,i,subLine.length,subLine)
+                        if(subLine==null){
+                            !self.killed && coroutine.start(handler.onClose);
+                            break M;
+                        }
+                        if(i==2 && subLine.charAt(0)==':'/* && len==3*/){//pubsub
+                            arr[i]=Number(subLine.substr(1));
+                            break;
+                        }else{
+                            subRaw=self.readBulkStr(reader, Number(subLine.substr(1)));
+                            if(subRaw==null){
+                                !self.killed && coroutine.start(handler.onClose);
+                                break M;
+                            }
+                            arr[i]=subRaw;
+                        }
+                    }
+                    // console.log(arr)
+                    handler.replyData(arr);
+                }else if(line[0]=='-'){
+                    handler.replyError(line.substr(1));
+                }else{
+                    console.error("RESP_unknow_protocol",line.length,line);
+                    // !self.killed && coroutine.start(handler.onClose);
+                    // break M;
+                }
+            }catch (e) {
+                if(!self.killed){
+                    coroutine.start(()=> {
+                        console.error("Redis|on_read", e);
+                        handler.onErr(e)
+                    });
+                }
+                break;
+            }
+        }
+    }
+    private readBulkStr(reader:Class_BufferedStream,n:number):Class_Buffer{
+        let b=reader.read(n);
+        // console.log("readBulkStr",n,b);
+        if(b==null){
+            return null;
+        }
+        while(b.length<n){
+            var t = reader.read(n-b.length);
+            if(t==null){
+                return null;
+            }
+            b=Buffer.concat([b,t]);
+        }
+        if(reader.readLine()==null){
+            return null;
+        }
+        return b;
+    }
+}
 /**
  * Redis client
+ * "redis://127.0.0.1:6379"
+ * "redis://authpwd@127.0.0.1:6379?db=1&prefix=XX:"
+ * "redis://127.0.0.1:6379?db=1&prefix=XX:&auth=authpwd"
  */
 export class Redis {
     public bufSize=255;//socket读取数据recv大小
     public waitReconnect=true;//发送指令时,如果在重连中是否等待重连
     protected _prefix:{str:string,buf:Class_Buffer}={str:"",buf:null};
     private _opts:{db:number, timeout:number, host:string,port:number,auth:string,autoReconnect:boolean};
-    private _parser;
     private _sender:Class_Fiber;
-    private _reader:Class_Fiber;
+    private _reader:RespReader;
     private _socket:Class_Socket;
     private _onOpen:Class_Event;
     private _connected:boolean;
     private _killed:boolean;
     private _backs:Array<OptEvent>;//request_response_fn
     private _mult_backs:Array<Function>;//mult_exec_convert
-    private _subFn:{[index:string]:Array<Function>};//subscribe
-    private _psubFn:{[index:string]:Array<Function>};//psubscribe
+    private _subFn:{[index:string]:Array<(d:Class_Buffer, chan?:string)=>void>};//subscribe
+    private _psubFn:{[index:string]:Array<(d:Class_Buffer, chan?:string)=>void>};//psubscribe
     private _sub_backs:Array<OptEvent>;//subscribe_cmd_handler
     private _waitWrite:{cmds:Class_Buffer[], event:Class_Event};
     constructor(url:string="redis://127.0.0.1:6379"){
@@ -37,7 +138,14 @@ export class Redis {
         var urlObj=Url.parse(url);
         var host=urlObj.hostname;
         var port=parseInt(urlObj.port)>0?parseInt(urlObj.port):6379;
-        var auth=urlObj.auth.length>0?urlObj.auth:null;
+        var auth=null;
+        if(urlObj.auth.length>0){
+            if(urlObj.username.length>0 && urlObj.password.length>0){
+                auth=urlObj.username+':'+urlObj.password;
+            }else{
+                auth=decodeURIComponent(urlObj.auth);
+            }
+        }
         var timeout=3000;
         var initDb=0;
         var autoReconnect=true;
@@ -46,7 +154,7 @@ export class Redis {
             if(query.db && parseInt(query.db)>0 && parseInt(query.db)<=16){
                 initDb=parseInt(query.db);
             }
-            if(query.auth && !auth){
+            if(query.auth && query.auth.length>0){
                 auth=query.auth;
             }
             if(query.timeout && parseInt(query.timeout)>0){
@@ -96,16 +204,18 @@ export class Redis {
         this._pre_Fibers();
         this.pre_sub_onConnect();
         this._onOpen.set();
+        this._reader.run();
     }
     private _pre_Fibers(){
         let T=this;
         T._socket.timeout=-1;
         T._sender = coroutine.start(function(){
             let self=T,sock=self._socket, buf:Class_Buffer,
-                tcs=self._waitWrite.cmds, evt=self._waitWrite.event;
+                evt=self._waitWrite.event, tcs:any[];
             while(self._socket===sock && self._connected){
+                tcs=self._waitWrite.cmds;
                 if(tcs.length>0){
-                    buf = tcs.length==1?tcs[0]:Buffer.concat(tcs);
+                    buf = Buffer.concat(tcs);
                     tcs.length=0;
                     try{
                         sock.send(buf);
@@ -120,54 +230,30 @@ export class Redis {
                 }
             }
         });
-        T._reader = coroutine.start(function () {
-            var buf=null;
-            let self=T,
-                sock=self._socket,
-                parser=self._parser,
-                bufSize=self.bufSize;
-            while (self._socket===sock && self._connected){
+        T._reader = new RespReader(T._socket, {
+            check:(sock:Class_Socket)=>{
+                return T._socket===sock && T._connected
+            },
+            onClose:T._on_lost.bind(T),
+            onErr:T._on_err.bind(T),
+            replyError:err=>{
                 try{
-                    buf=sock.recv(bufSize);
-                    if(buf==null){
-                        self._on_lost();
-                        break;
-                    }
-                    if(self._socket===sock){
-                        parser.execute(buf);
-                    }
-                }catch (e) {
-                    if(!self._killed){
-                        console.error("Redis|on_read",e);
-                        self._on_err(e);
-                    }
-                    break;
-                }
-            }
-        });
-        var self=T;
-        T._parser = new RedisParser({
-            returnBuffers:true,
-            optionStringNumbers:true,
-            returnReply: reply => {
-                // console.log("--->>>",reply.toString())
-                try{
-                    if(self._sub_backs){
-                        self._on_subReply(reply);
+                    if (T._sub_backs) {
+                        T._sub_backs.shift().fail(new RedisError(err));
                     }else{
-                        self._backs.shift().then(reply);
+                        T._backs.shift().fail(new RedisError(err));
                     }
                 }catch(exx){
                     // console.error("--->>>", (reply||"null").toString(),exx)
                     console.error("Redis|on_reply",exx);
                 }
             },
-            returnError: error => {
+            replyData:reply=>{
                 try{
-                    if (self._sub_backs) {
-                        self._sub_backs.shift().fail(error);
+                    if(T._sub_backs){
+                        T._on_subReply(reply);
                     }else{
-                        self._backs.shift().fail(error);
+                        T._backs.shift().then(reply);
                     }
                 }catch(exx){
                     // console.error("--->>>", (reply||"null").toString(),exx)
@@ -197,13 +283,13 @@ export class Redis {
             return;
         }
         console.error("Redis|_on_err%s",this._opts.host+":"+this._opts.port, e);
+        this._connected=false;
+        if(this._reader){
+            this._reader.kill();
+        }
         try{
             this._socket.close();
         }catch (e) {
-        }
-        this._connected=false;
-        if(this._parser){
-            this._parser.reset();
         }
         this._onOpen.clear();
         this._waitWrite.cmds.length=0;
@@ -284,12 +370,12 @@ export class Redis {
         this.beforeSend();
         var evt=new OptEvent();
         backs.push(evt);
-        this._waitWrite.cmds.push(...this._temp_cmds);
-        this._temp_cmds.length=0;
+        this._waitWrite.cmds.push(Buffer.concat(this._temp_cmds));
         this._waitWrite.event.set();
+        this._temp_cmds.length=0;
         return evt.wait(convert);
     }
-    public rawCommand(cmd:string,...args){
+    public rawCommand(cmd:string,...args):any{
         // console.log("...>",cmd,...args);
         return this.send(...arguments).wait();
     }
@@ -316,14 +402,14 @@ export class Redis {
     public select(db:number):boolean{
         return this.send(CmdSelect, db).wait(castBool);
     }
-    public info(option?:string){
+    public info(option?:string):string{
         var args = option&&option.length>0 ? [CmdInfo, option]:[CmdInfo];
         return this.send(...args).wait(castStr);
     }
-    public client(subCommand:string){
+    public client(subCommand:string):string{
         return this.send(CmdClient, subCommand).wait(castStr);
     }
-    public time(){
+    public time():number{
         return this.send(CmdTime).wait(castNumbers);
     }
     public slowlog(subCommand, ...subArgs){
@@ -343,17 +429,17 @@ export class Redis {
             throw new RedisError("in_subscribe_context");
         }
     }
-    public watch(...keys){
+    public watch(...keys):boolean{
         this.pre_trans();
         keys=util.isArray(keys[0])?keys[0]:keys;
         keys=this._fix_prefix_any(keys);
         return this.send(CmdWatch, ...keys).wait(castBool);
     }
-    public unwatch(){
+    public unwatch():boolean{
         this.pre_trans();
         return this.send(CmdUnWatch).wait(castBool);
     }
-    public multi(){
+    public multi():Redis{
         this.pre_trans();
         if(!this._mult_backs){
             this._mult_backs = [];
@@ -367,7 +453,7 @@ export class Redis {
         }
         return this;
     }
-    public exec(){
+    public exec():any[]{
         this.pre_trans();
         var fns=this._mult_backs;
         this._mult_backs=null;
@@ -536,15 +622,15 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdStrlen, key).wait(castNumber);
     }
-    public get(key:string|Class_Buffer, castFn=castStr){
+    public get(key:string|Class_Buffer, castFn=castStr):any{
         key=this._fix_prefix_any(key);
         return this.send(CmdGet, key).wait(castFn);
     }
-    public mget(keys:string[], castFn=castStrs){
+    public mget(keys:string[], castFn=castStrs):any[]{
         var keys=this._fix_prefix_any(keys);
         return this.send(CmdMGet, ...keys).wait(castFn);
     }
-    public mgetWrap(keys:string[], castFn=castStrs){
+    public mgetWrap(keys:string[], castFn=castStrs):{[index:string]:any}{
         var preKeys=this._fix_prefix_any(keys);
         var a=this.send(CmdMGet, ...preKeys).wait(castFn);
         var r={};
@@ -553,23 +639,23 @@ export class Redis {
         }
         return r;
     }
-    public getSet(key:string|Class_Buffer, val:any, castFn=castStr){
+    public getSet(key:string|Class_Buffer, val:any, castFn=castStr):any{
         key=this._fix_prefix_any(key);
         return this.send(CmdGetSet, key, val).wait(castFn);
     }
-    public incr(key:string|Class_Buffer, castFn=castNumber){
+    public incr(key:string|Class_Buffer, castFn=castNumber):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdIncr,key).wait(castFn);
     }
-    public decr(key:string|Class_Buffer, castFn=castNumber){
+    public decr(key:string|Class_Buffer, castFn=castNumber):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdDecr,key).wait(castFn);
     }
-    public incrBy(key:string|Class_Buffer, step:number, castFn=castNumber){
+    public incrBy(key:string|Class_Buffer, step:number, castFn=castNumber):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdIncrBy,key,step).wait(castFn);
     }
-    public decrBy(key:string|Class_Buffer, step:number, castFn=castNumber){
+    public decrBy(key:string|Class_Buffer, step:number, castFn=castNumber):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdDecrBy,key,step).wait(castFn);
     }
@@ -622,29 +708,29 @@ export class Redis {
         a.list=a[1];
         return a;
     }
-    public scan(cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs){
+    public scan(cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs):any[]{
         matchPattern=this._fix_prefix_any(matchPattern);
         return this._scan_act(castFn, 'scan', null, cursor, matchPattern, matchCount);
     }
-    public sscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs){
+    public sscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._scan_act(castFn, 'sscan', key, cursor, matchPattern, matchCount);
     }
-    public hscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs){
+    public hscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._scan_act(castFn, 'hscan', key, cursor, matchPattern, matchCount);
     }
-    public zscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs){
+    public zscan(key:string|Class_Buffer, cursor:any, matchPattern?:string|Class_Buffer, matchCount?:number, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._scan_act(castFn, 'zscan', key, cursor, matchPattern, matchCount);
     }
 
-    public geoadd(key:string|Class_Buffer, ...LngLatMembers){
+    public geoadd(key:string|Class_Buffer, ...LngLatMembers):number{
         key=this._fix_prefix_any(key);
         LngLatMembers.unshift('geoadd',key);
-        return this.send(...LngLatMembers).send(castNumber);
+        return this.send(...LngLatMembers).wait(castNumber);
     }
-    public geodist(key:string|Class_Buffer, m1:any, m2:any, unit?:string){
+    public geodist(key:string|Class_Buffer, m1:any, m2:any, unit?:string):number{
         key=this._fix_prefix_any(key);
         var args=['geodist',key,m1,m2];
         if(unit){
@@ -652,7 +738,7 @@ export class Redis {
         }
         return this.send(...args).wait(castNumber);
     }
-    public geohash(key:string|Class_Buffer, ...members){
+    public geohash(key:string|Class_Buffer, ...members):string[]{
         key=this._fix_prefix_any(key);
         members.unshift('geohash',key);
         return this.send(...members).wait(castStrs);
@@ -690,7 +776,7 @@ export class Redis {
         });
         return a;
     }
-    public georadiusbymember(key:string|Class_Buffer, member:any, radius:string|number, unit:string){
+    public georadiusbymember(key:string|Class_Buffer, member:any, radius:string|number, unit:string):string[]{
         key=this._fix_prefix_any(key);
         var args=['georadiusbymember',key,member,radius,unit];
         return this.send(...args).wait(castStrs);
@@ -711,106 +797,105 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdLpushx, key, val).wait(castNumber);
     }
-    public rPushx(key:string|Class_Buffer, val:any){
+    public rPushx(key:string|Class_Buffer, val:any):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdRpushx, key, val).wait(castNumber);
     }
-    public lLen(key:string|Class_Buffer){
+    public lLen(key:string|Class_Buffer):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdLlen, key).wait(castNumber);
     }
-    public lPop(key:string|Class_Buffer, castFn=castStr){
+    public lPop(key:string|Class_Buffer, castFn=castStr):any{
         key=this._fix_prefix_any(key);
         return this.send(CmdLpop, key).wait(castFn);
     }
-    public rPop(key:string|Class_Buffer, castFn=castStr){
+    public rPop(key:string|Class_Buffer, castFn=castStr):any{
         key=this._fix_prefix_any(key);
         return this.send(CmdRpop, key).wait(castFn);
     }
-    public lIndex(key:string|Class_Buffer, offset:number, castFn=castStr){
+    public lIndex(key:string|Class_Buffer, offset:number, castFn=castStr):any{
         key=this._fix_prefix_any(key);
         return this.send(CmdLindex, key, offset).wait(castFn);
     }
-    public lInsert(key:string|Class_Buffer, pivot:any, val:any, toBefore:boolean=true){
+    public lInsert(key:string|Class_Buffer, pivot:any, val:any, toBefore:boolean=true):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdLinsert, key, toBefore?'BEFORE':'AFTER', pivot, val).wait(castNumber);
     }
-    public lSet(key:string|Class_Buffer, index:number, val:any){
+    public lSet(key:string|Class_Buffer, index:number, val:any):boolean{
         key=this._fix_prefix_any(key);
         return this.send(CmdLset, key, index, val).wait(castBool);
     }
-    public lRem(key:string|Class_Buffer, count:number, val:any){
+    public lRem(key:string|Class_Buffer, count:number, val:any):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdLrem, key, count, val).wait(castNumber);
     }
-    public lTrim(key:string|Class_Buffer, start:number, stop:number){
+    public lTrim(key:string|Class_Buffer, start:number, stop:number):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdLtrim, key, start, stop).wait(castNumber);
     }
-    public lRange(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
+    public lRange(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this.send(CmdLrange, key, start, stop).wait(castFn);
     }
-    public bLpop(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number, castFn=castStr){
+    public bLpop(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number, castFn=castStrs):any[]{
         this.pre_block();
         key=this._fix_prefix_any(key);
         var args=Array.isArray(key) ? [CmdBlpop, ...key, timeout]:[CmdBlpop, key, timeout];
         return this.send(...args).wait(castFn);
     }
-    public bRpop(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number, castFn=castStr){
+    public bRpop(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number, castFn=castStrs):any[]{
         this.pre_block();
         key=this._fix_prefix_any(key);
         var args=Array.isArray(key) ? [CmdBrpop, ...key, timeout]:[CmdBrpop, key, timeout];
         return this.send(...args).wait(castFn);
     }
-    public bRpopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, timeout:number, castFn=castStr){
+    public bRpopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, timeout:number, castFn=castStr):any{
         this.pre_block();
         srcKey=this._fix_prefix_any(srcKey); destKey=this._fix_prefix_any(destKey);
         var args=[CmdBrpopLpush, srcKey, destKey, timeout];
         return this.send(...args).wait(castFn);
     }
-    public rPopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, castFn=castStr){
+    public rPopLpush(srcKey:string|Class_Buffer, destKey:string|Class_Buffer, castFn=castStr):any{
         this.pre_block();
         srcKey=this._fix_prefix_any(srcKey); destKey=this._fix_prefix_any(destKey);
         return this.send(CmdRpopLpush, srcKey, destKey).wait(castFn);
     }
 
-    public hSet(key:string|Class_Buffer, field:string|Class_Buffer, val:any ){
+    public hSet(key:string|Class_Buffer, field:string|Class_Buffer, val:any ):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdHSet, key, field, val).wait(castNumber);
     }
-    public hSetNx(key:string|Class_Buffer, field:string|Class_Buffer, val:any ){
+    public hSetNx(key:string|Class_Buffer, field:string|Class_Buffer, val:any ):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdHSetNx, key, field, val).wait(castNumber);
     }
-    public hGet(key:string|Class_Buffer, field:string|Class_Buffer, castFn=castStr ){
+    public hGet(key:string|Class_Buffer, field:string|Class_Buffer, castFn=castStr ):any{
         key=this._fix_prefix_any(key);
         return this.send(CmdHGet, key, field).wait(castFn);
     }
-    public hLen(key:string|Class_Buffer){
+    public hLen(key:string|Class_Buffer):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdHLen, key).wait(castNumber);
     }
-    public hDel(key:string|Class_Buffer, ...fields){
+    public hDel(key:string|Class_Buffer, ...fields):number{
         key=this._fix_prefix_any(key);
         fields=util.isArray(fields[0])?fields[0]:fields;
         return this.send(CmdHdel, ...fields).wait(castNumber);
     }
-    public hKeys(key:string|Class_Buffer, castFn=castStrs){
+    public hKeys(key:string|Class_Buffer, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this.send(CmdHKeys, key).wait(castFn);
     }
-    public hVals(key:string|Class_Buffer, castFn=castStrs){
+    public hVals(key:string|Class_Buffer, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this.send(CmdHVals, key).wait(castFn);
     }
-    public hGetAll(key:string|Class_Buffer, castFn=castStrs){
+    public hGetAll(key:string|Class_Buffer, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this.send(CmdHGetAll, key).wait(castFn);
     }
-    public hGetAllWrap(key:string|Class_Buffer, castFn=castStrs){
-        key=this._fix_prefix_any(key);
-        var a = this.send(CmdHGetAll, key).wait(castFn);
+    public hGetAllWrap(key:string|Class_Buffer, castFn=castStrs):{[index:string]:any}{
+        var a = this.hGetAll(key, castFn);
         var r = {};
         for(var i=0;i<a.length;i+=2){
             r[a[i].toString()] = a[i+1];
@@ -825,11 +910,11 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdHIncrBy, key, field, val).wait(castFn);
     }
-    public hIncrByFloat(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}):any{
+    public hIncrByFloat(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdHIncrByFloat, key, field, val).wait(castNumber);
     }
-    public hMset(key:string|Class_Buffer, hashObj:{[index:string]:any}){
+    public hMset(key:string|Class_Buffer, hashObj:{[index:string]:any}):boolean{
         key=this._fix_prefix_any(key);
         var args = [CmdHMset, key];
         for(var k in hashObj){
@@ -837,12 +922,12 @@ export class Redis {
         }
         return this.send(...args).wait(castBool);
     }
-    public hMGet(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn=castStrs){
+    public hMGet(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         if(!fields || fields.length<1)return [];
         return this.send(CmdHMget, key, ...fields).wait(castFn);
     }
-    public hMGetWrap(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn=castStrs){
+    public hMGetWrap(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn=castStrs):{[index:string]:any}{
         key=this._fix_prefix_any(key);
         if(!fields || fields.length<1)return [];
         var a = this.send(CmdHMget, key, ...fields).wait(castFn);
@@ -867,11 +952,11 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdScard, key).wait(castNumber);
     }
-    public sPop(key:string|Class_Buffer, num:number=1, castFn=castStrs){
+    public sPop(key:string|Class_Buffer, num:number=1, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this.send(CmdSpop, key, num).wait(castFn);
     }
-    public sRandmember(key:string|Class_Buffer, num:number=1, castFn=castStrs){
+    public sRandmember(key:string|Class_Buffer, num:number=1, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this.send(CmdSrandmember, key, num).wait(castFn);
     }
@@ -879,38 +964,38 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdSismember, key, member).wait(castBool);
     }
-    public sDiff(keys:Array<string|Class_Buffer>, castFn=castStrs){
+    public sDiff(keys:Array<string|Class_Buffer>, castFn=castStrs):any[]{
         keys=this._fix_prefix_any(keys);
         return this.send(CmdSdiff, ...keys).wait(castFn);
     }
-    public sDiffStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>){
+    public sDiffStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>):number{
         keys.unshift(destKey);
         keys=this._fix_prefix_any(keys);
         return this.send(CmdSdiffStore, destKey, ...keys).wait(castNumber);
     }
-    public sInter(keys:Array<string|Class_Buffer>, castFn=castStrs){
+    public sInter(keys:Array<string|Class_Buffer>, castFn=castStrs):any[]{
         keys=this._fix_prefix_any(keys);
         return this.send(CmdSinter, ...keys).wait(castFn);
     }
-    public sInterStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>){
+    public sInterStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>):number{
         keys.unshift(destKey);
         keys=this._fix_prefix_any(keys);
         return this.send(CmdSinterStore, ...keys).wait(castNumber);
     }
-    public sUnion(keys:Array<string|Class_Buffer>, castFn=castStrs){
+    public sUnion(keys:Array<string|Class_Buffer>, castFn=castStrs):any[]{
         keys=this._fix_prefix_any(keys);
         return this.send(CmdSunion, ...keys).wait(castFn);
     }
-    public sUnionStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>){
+    public sUnionStore(destKey:string|Class_Buffer, keys:Array<string|Class_Buffer>):number{
         keys.unshift(destKey);
         keys=this._fix_prefix_any(keys);
         return this.send(CmdSunionStore, ...keys).wait(castNumber);
     }
-    public sMembers(key:string|Class_Buffer, castFn=castStrs){
+    public sMembers(key:string|Class_Buffer, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this.send(CmdSmembers,key).wait(castFn);
     }
-    public sMove(sourceKey:string|Class_Buffer, destKey:string|Class_Buffer, member:any){
+    public sMove(sourceKey:string|Class_Buffer, destKey:string|Class_Buffer, member:any):number{
         var keys=[sourceKey,destKey];
         keys=this._fix_prefix_any(keys);
         return this.send(CmdSmove, ...keys, member).wait(castNumber);
@@ -925,7 +1010,7 @@ export class Redis {
         return this.send(CmdZadd, key, opts.join(''), ...smsArr).wait(castNumber);
     }
     //opts = [NX|XX] [CH] [INCR]
-    public zAddByKV(key:string|Class_Buffer, sms:{[index:string]:number}, opts?:Array<string>){
+    public zAddByKV(key:string|Class_Buffer, sms:{[index:string]:number}, opts?:Array<string>):number{
         key=this._fix_prefix_any(key);
         var smsArr:Array<any>=toZsetArray(sms,[]);
         if(!opts || opts.length<1){
@@ -934,54 +1019,54 @@ export class Redis {
         return this.send(CmdZadd, key, opts.join(''), ...smsArr).wait(castNumber);
     }
     //opts = [NX|XX] [CH] [INCR]
-    public zAddOne(key:string|Class_Buffer, member:any, score:number, opts?:Array<string>){
+    public zAddOne(key:string|Class_Buffer, member:any, score:number, opts?:Array<string>):number{
         key=this._fix_prefix_any(key);
         if(!opts || opts.length<1){
             return this.send(CmdZadd, key, score, member).wait(castNumber);
         }
         return this.send(CmdZadd, key, opts.join(''), score, member).wait(castNumber);
     }
-    public zIncrBy(key:string|Class_Buffer, member:any, increment:number, castFn=castNumber){
+    public zIncrBy(key:string|Class_Buffer, member:any, increment:number, castFn=castNumber):number|any{
         key=this._fix_prefix_any(key);
         return this.send(CmdZincrBy, key, increment, member).wait(castFn);
     }
-    public zCard(key:string|Class_Buffer){
+    public zCard(key:string|Class_Buffer):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZcard, key).wait(castNumber);
     }
-    public zCount(key:string|Class_Buffer, min:string|number, max:string|number){
+    public zCount(key:string|Class_Buffer, min:string|number, max:string|number):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZcount, key, min, max).wait(castNumber);
     }
-    public zLexCount(key:string|Class_Buffer, min:string|number, max:string|number){
+    public zLexCount(key:string|Class_Buffer, min:string|number, max:string|number):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZlexcount, key, min, max).wait(castNumber);
     }
-    public zScore(key:string|Class_Buffer, member:any, castFn=castNumber){
+    public zScore(key:string|Class_Buffer, member:any, castFn=castNumber):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZscore, key, member).wait(castFn);
     }
-    public zRank(key:string|Class_Buffer, member:any){
+    public zRank(key:string|Class_Buffer, member:any):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZrank, key, member).wait(castNumber);
     }
-    public zRevRank(key:string|Class_Buffer, member:any){
+    public zRevRank(key:string|Class_Buffer, member:any):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZrevRank, key, member).wait(castNumber);
     }
-    public zRem(key:string|Class_Buffer, ...members){
+    public zRem(key:string|Class_Buffer, ...members):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZrem, key, ...members).wait(castNumber);
     }
-    public zRemByLex(key:string|Class_Buffer, min:string|number, max:string|number){
+    public zRemByLex(key:string|Class_Buffer, min:string|number, max:string|number):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZremRangeByLex, key, min,max).wait(castNumber);
     }
-    public zRemByScore(key:string|Class_Buffer, min:string|number, max:string|number){
+    public zRemByScore(key:string|Class_Buffer, min:string|number, max:string|number):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZremRangeByScore, key, min,max).wait(castNumber);
     }
-    public zRemByRank(key:string|Class_Buffer, start:number, stop:number){
+    public zRemByRank(key:string|Class_Buffer, start:number, stop:number):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdZremRangeByRank, key, start,stop).wait(castNumber);
     }
@@ -1006,31 +1091,31 @@ export class Redis {
         // }
         return list;
     }
-    public zPopMin(key:string|Class_Buffer, num:number=1, castFn=castStrs){
+    public zPopMin(key:string|Class_Buffer, num:number=1, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 1, [CmdZpopmin, key, num]);
     }
-    public zPopMax(key:string|Class_Buffer, num:number=1, castFn=castStrs){
+    public zPopMax(key:string|Class_Buffer, num:number=1, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 1, [CmdZpopmax, key, num]);
     }
-    public zRange(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
+    public zRange(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 0, [CmdZrange, key, start, stop]);
     }
-    public zRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
+    public zRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 1, [CmdZrange, key, start, stop, "WITHSCORES"]);
     }
-    public zRevRange(key:string|Class_Buffer, start:number, stop:number, withScore?:boolean, castFn=castStrs){
+    public zRevRange(key:string|Class_Buffer, start:number, stop:number, withScore?:boolean, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 0, [CmdZrevRange, key, start, stop]);
     }
-    public zRevRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs){
+    public zRevRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 1, [CmdZrevRange, key, start, stop, "WITHSCORES"]);
     }
-    public zRangeByScore(key:string|Class_Buffer, min:number, max:number, opts:{withScore?:boolean, limit?:{offset:number,count:number}}={withScore:false}, castFn=castStrs){
+    public zRangeByScore(key:string|Class_Buffer, min:number, max:number, opts:{withScore?:boolean, limit?:{offset:number,count:number}}={withScore:false}, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         var args = [CmdZrangeByScore, key, Math.min(min,max), Math.max(min,max)];
         if(opts.limit){
@@ -1041,7 +1126,7 @@ export class Redis {
         }
         return this._z_act(castFn, opts.withScore?1:0, args);
     }
-    public zRevRangeByScore(key:string|Class_Buffer, min:number, max:number, opts:{withScore?:boolean, limit?:{offset:number,count:number}}={withScore:false}, castFn=castStrs){
+    public zRevRangeByScore(key:string|Class_Buffer, min:number, max:number, opts:{withScore?:boolean, limit?:{offset:number,count:number}}={withScore:false}, castFn=castStrs):any[]{
         key=this._fix_prefix_any(key);
         var args = [CmdZrevrangeByScore, key, Math.max(min,max), Math.min(min,max)];
         if(opts.limit){
@@ -1052,7 +1137,7 @@ export class Redis {
         }
         return this._z_act(castFn, opts.withScore?1:0, args);
     }
-    public bzPopMin(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn=castStr){
+    public bzPopMin(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn=castStr):Array<string|number>{
         this.pre_block();
         key=this._fix_prefix_any(key);
         var args = Array.isArray(key) ? [CmdBzPopMin, ...key, timeout]:[CmdBzPopMin, key, timeout];
@@ -1062,7 +1147,7 @@ export class Redis {
         r[2]=castFn(r[2]);
         return r;
     }
-    public bzPopMax(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn=castStr){
+    public bzPopMax(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn=castStr):Array<string|number>{
         this.pre_block();
         key=this._fix_prefix_any(key);
         var args = Array.isArray(key) ? [CmdBzPopMax, ...key, timeout]:[CmdBzPopMax, key, timeout];
@@ -1076,11 +1161,11 @@ export class Redis {
     public pfAdd(key:string|Class_Buffer, ...elements){
         var keys=util.isArray(elements[0])?elements[0]:elements;
         keys=this._fix_prefix_any(keys);
-        return this.send(CmdPfadd, ...keys).wait(castNumber);
+        return this.send(CmdPfadd, ...keys).wait();
     }
     public pfCount(key:string|Class_Buffer){
         key=this._fix_prefix_any(key);
-        return this.send(CmdPfcount, key).wait(castNumber);
+        return this.send(CmdPfcount, key).wait();
     }
     public pfMerge(destKey:string|Class_Buffer, ...sourceKeys){
         var keys=util.isArray(sourceKeys[0])?sourceKeys[0]:sourceKeys;
@@ -1090,9 +1175,9 @@ export class Redis {
     }
 
     public publish(channel:string|Class_Buffer, data:any):number{
-        return this.send(CmdPublish, channel, data).wait(castNumber);
+        return this.send(CmdPublish, channel, data).wait();
     }
-    private _real_sub(cmd, key:string, fn:Function, isSubscribe?:boolean){
+    private _real_sub(cmd, key:string, fn:(d:Class_Buffer, chan?:string)=>void, isSubscribe?:boolean){
         this.pre_sub();
         var r=this.send(cmd, key).wait();
         var fns:{[index:string]:Array<Function>} = isSubscribe ? this._subFn:this._psubFn;
@@ -1102,33 +1187,37 @@ export class Redis {
         fns[key].push(fn);
         return r;
     }
-    public subscribe(key:string|string[], fn:Function){
+    public subscribe(key:string|string[], fn:(d:Class_Buffer, chan?:string)=>void):number{
         // if(key==null||key.length<1||!util.isFunction(fn))return;
         key=this._fix_prefix_str(key);
+        let n:number;
         if(util.isArray(key)){
             var arr:string[] = <string[]>key;
             arr.forEach(e=>{
-                this._real_sub(CmdSubscribe, e,fn, true);
+                n=this._real_sub(CmdSubscribe, e,fn, true);
             })
         }else{
-            this._real_sub(CmdSubscribe, key.toString(),fn, true);
+            n=this._real_sub(CmdSubscribe, key.toString(),fn, true);
         }
+        return n;
     }
-    public psubscribe(key:string|string[], fn:Function){
+    public psubscribe(key:string|string[], fn:(d:Class_Buffer, chan?:string)=>void):number{
         // if(key==null||key.length<1||!util.isFunction(fn))return;
         key=this._fix_prefix_str(key);
+        let n:number;
         if(util.isArray(key)){
             var arr:string[] = <string[]>key;
             arr.forEach(e=>{
-                this._real_sub(CmdPSubscribe, e,fn, false);
+                n=this._real_sub(CmdPSubscribe, e,fn, false);
             })
         }else{
-            this._real_sub(CmdPSubscribe, key.toString(),fn, false);
+            n=this._real_sub(CmdPSubscribe, key.toString(),fn, false);
         }
+        return n;
     }
     private _real_unsub(cmd, key:string, fn, fns:{[index:string]:Array<Function>}){
         if(!fns){
-            return;
+            return 0;
         }
         var r = this.send(cmd, key).wait();
         var idx = fns[key].indexOf(fn);
@@ -1141,11 +1230,11 @@ export class Redis {
         this.after_unsub();
         return r;
     }
-    public unsubscribe(key:string, fn:Function){
+    public unsubscribe(key:string, fn:Function):number{
         key=this._fix_prefix_str(key);
         return this._real_unsub(CmdUnSubscribe, key, fn, this._subFn);
     }
-    public punsubscribe(key:string, fn:Function){
+    public punsubscribe(key:string, fn:Function):number{
         key=this._fix_prefix_str(key);
         return this._real_unsub(CmdPUnSubscribe, key, fn, this._psubFn);
     }
@@ -1287,15 +1376,15 @@ export class Redis {
         return <any>Buffer.from(this._prefix.str+k);
     }
 
-    public static castBool:(bufs:any)=>any;
+    public static castBool:(bufs:any)=>boolean;
     public static castAuto:(bufs:any)=>any;
-    public static castStr:(bufs:any)=>any;
-    public static castStrs:(bufs:any)=>any;
-    public static castNumber:(bufs:any)=>any;
-    public static castNumbers:(bufs:any)=>any;
+    public static castStr:(bufs:any)=>string;
+    public static castStrs:(bufs:any)=>string[];
+    public static castNumber:(bufs:any)=>number;
+    public static castNumbers:(bufs:any)=>number[];
 
     public static castBigInt:(bufs:any)=>any;
-    public static castBigInts:(bufs:any)=>any;
+    public static castBigInts:(bufs:any)=>any[];
 }
 
 class OptEvent{
@@ -1370,7 +1459,7 @@ function toZsetArray (hash, array) {
     }
     return array
 }
-function castBool(buf:any) {
+function castBool(buf:any):boolean {
     if(util.isBoolean(buf)){
         return buf;
     }
@@ -1379,10 +1468,10 @@ function castBool(buf:any) {
     }
     return buf!=null;
 }
-function castStr(buf:any) {
+function castStr(buf:any):string {
     return buf ? buf.toString():null;
 }
-function castStrs(bufs) {
+function castStrs(bufs):string[] {
     bufs.forEach((v,k,a)=>{
         a[k]=v?v.toString():v;
     });
@@ -1400,7 +1489,7 @@ function deepCastStrs(r:Array<any>){
     }
     return r;
 }
-function castNumber(buf:any) {
+function castNumber(buf:any):number {
     if(buf){
         if(!util.isNumber(buf)){
             buf=Number(buf.toString());
@@ -1408,26 +1497,26 @@ function castNumber(buf:any) {
     }
     return buf;
 }
+function castNumbers(bufs):number[] {
+    bufs.forEach((v, k, a) => {
+        if (v != null) {
+            var s=v.toString();
+            var n = Number(s);
+            a[k] = isNaN(n) ? s:n;
+        }
+    });
+    return bufs;
+}
 function castBigInt(buf:any) {
     if(buf){
         buf=global["BigInt"](buf.toString());
     }
     return buf;
 }
-function castBigInts(bufs){
+function castBigInts(bufs):any[]{
     bufs.forEach((v, k, a) => {
         if (v != null) {
             a[k] = global["BigInt"](v.toString());
-        }
-    });
-    return bufs;
-}
-function castNumbers(bufs) {
-    bufs.forEach((v, k, a) => {
-        if (v != null) {
-            var s=v.toString();
-            var n = Number(s);
-            a[k] = isNaN(n) ? s:n;
         }
     });
     return bufs;
@@ -1601,7 +1690,7 @@ const CmdLrem=Buffer.from('lrem');
 const CmdLset=Buffer.from('lset');
 const CmdBlpop=Buffer.from('blpop');
 const CmdBrpop=Buffer.from('brpop');
-const CmdBrpopLpush=Buffer.from('bropolpush');
+const CmdBrpopLpush=Buffer.from('brpoplpush');
 const CmdRpopLpush=Buffer.from('rpoplpush');
 
 const CmdHSet=Buffer.from('hset');
