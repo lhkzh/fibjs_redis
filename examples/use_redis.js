@@ -41,8 +41,8 @@ console.log('hmget', r.hMGet('fmap', ['a','c']).join(',')=='va,vc');
 console.log('hincrby', r.hIncrBy('fmap', 'int',3)==3);
 console.log('hincrby', r.hIncrBy('fmap', 'int',-2)==1);
 console.log('hscan', JSON.stringify(r.hscan('fmap',0,'in*',1000))=='[0,{"int":"1"}');
-r.del('hmap');
-console.log();
+// r.del('hmap');
+// console.log();
 r.del('fset');
 console.log('sadd', r.sAdd('fset',"a","b","c",0,1,2,3,4,5)==8);
 console.log('srem',r.sRem('fset',["a","b","c"])==3);
@@ -69,8 +69,8 @@ m.set("f03", "mult-f03",30);
 m.get("f01");
 m.pttl("f03");
 m.publish("foo","foo!");
+m.scan(0,"*",100);
 console.log("mult/exec",m.exec().length==5);
-
 
 var s=new Redis();
 s.subscribe("foo",function(msg,channel){
