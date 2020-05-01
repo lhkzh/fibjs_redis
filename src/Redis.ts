@@ -59,8 +59,6 @@ class RespReader {
                         handler.replyError(multOpt.err);
                     }
                     handler.replyData(arr);
-                }else if(line[0]==':'){
-                    handler.replyData(Number(line.substr(1)))
                 }else if(line[0]=='-'){
                     handler.replyError(line.substr(1));
                 }else{
@@ -656,12 +654,19 @@ export class Redis {
         return this.send(CmdMGet, ...keys).wait(castFn);
     }
     public mgetWrap(keys:string[], castFn:Function=castStrs):{[index:string]:any}{
-        var preKeys=this._fix_prefix_any(keys);
-        var a=this.send(CmdMGet, ...preKeys).wait(castFn);
-        var r={};
-        for(var i=0;i<keys.length;i++){
-            r[keys[i].toString()] = a[i];
-        }
+        var a = this.mget(keys, castFn);
+        var r = {};
+        keys.forEach((k,i)=>{
+            r[k] = a[i];
+        });
+        return r;
+    }
+    public mgetWrap2(keys:any[], fixKeyPathFn:(k:any)=>string, castFn:Function=castStrs):{[index:string]:any}{
+        var a = this.mget(keys.map(fixKeyPathFn), castFn);
+        var r = {};
+        keys.forEach((k,i)=>{
+            r[k] = a[i];
+        });
         return r;
     }
     public getSet(key:string|Class_Buffer, val:any, castFn:Function=castStr):any{
@@ -887,15 +892,15 @@ export class Redis {
         return this.send(CmdRpopLpush, srcKey, destKey).wait(castFn);
     }
 
-    public hSet(key:string|Class_Buffer, field:string|Class_Buffer, val:any ):number{
+    public hSet(key:string|Class_Buffer, field:string|Class_Buffer|number, val:any ):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdHSet, key, field, val).wait(castNumber);
     }
-    public hSetNx(key:string|Class_Buffer, field:string|Class_Buffer, val:any ):number{
+    public hSetNx(key:string|Class_Buffer, field:string|Class_Buffer|number, val:any ):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdHSetNx, key, field, val).wait(castNumber);
     }
-    public hGet(key:string|Class_Buffer, field:string|Class_Buffer, castFn:Function=castStr ):any{
+    public hGet(key:string|Class_Buffer, field:string|Class_Buffer|number, castFn:Function=castStr ):any{
         key=this._fix_prefix_any(key);
         return this.send(CmdHGet, key, field).wait(castFn);
     }
@@ -928,15 +933,15 @@ export class Redis {
         }
         return r;
     }
-    public hExists(key:string|Class_Buffer, field:string|Class_Buffer):boolean{
+    public hExists(key:string|Class_Buffer, field:string|Class_Buffer|number):boolean{
         key=this._fix_prefix_any(key);
         return this.send(CmdHExists, key, field).wait(castBool);
     }
-    public hIncrBy(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}, castFn:Function=castNumber):any{
+    public hIncrBy(key:string|Class_Buffer, field:string|Class_Buffer|number, val:number|string|{toString():string}, castFn:Function=castNumber):any{
         key=this._fix_prefix_any(key);
         return this.send(CmdHIncrBy, key, field, val).wait(castFn);
     }
-    public hIncrByFloat(key:string|Class_Buffer, field:string|Class_Buffer, val:number|string|{toString():string}):number{
+    public hIncrByFloat(key:string|Class_Buffer, field:string|Class_Buffer|number, val:number|string|{toString():string}):number{
         key=this._fix_prefix_any(key);
         return this.send(CmdHIncrByFloat, key, field, val).wait(castNumber);
     }
@@ -948,12 +953,12 @@ export class Redis {
         }
         return this.send(...args).wait(castBool);
     }
-    public hMGet(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn:Function=castStrs):any[]{
+    public hMGet(key:string|Class_Buffer, fields:Array<string|Class_Buffer|number>, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);
         if(!fields || fields.length<1)return [];
         return this.send(CmdHMget, key, ...fields).wait(castFn);
     }
-    public hMGetWrap(key:string|Class_Buffer, fields:Array<string|Class_Buffer>, castFn:Function=castStrs):{[index:string]:any}{
+    public hMGetWrap(key:string|Class_Buffer, fields:Array<string|Class_Buffer|number>, castFn:Function=castStrs):{[index:string]:any}{
         key=this._fix_prefix_any(key);
         if(!fields || fields.length<1)return [];
         var a = this.send(CmdHMget, key, ...fields).wait(castFn);
@@ -1617,28 +1622,23 @@ const CODEC = 'utf8';
 const CHAR_Star   = Buffer.from('*', CODEC);
 const CHAR_Dollar = Buffer.from('$', CODEC);
 const BUF_EOL   = Buffer.from('\r\n', CODEC);
-const BUF_OK = Buffer.from('OK', CODEC);
-function encodeWord(code):Class_Buffer {
-    const buf = Buffer.isBuffer(code) ? code:Buffer.from(String(code), CODEC);
-    const buf_len = Buffer.from(String(buf.length), CODEC);
-    return Buffer.concat([CHAR_Dollar, buf_len, BUF_EOL, buf, BUF_EOL]);
+function encodeBulk(code):Class_Buffer {
+    let buf = Buffer.isBuffer(code) ? code:Buffer.from(String(code), CODEC);
+    return Buffer.concat([CHAR_Dollar, Buffer.from(String(buf.length), CODEC), BUF_EOL, buf, BUF_EOL]);
 }
 export function encodeCommand(command:Array<any>):Class_Buffer {
-    const resps = command.map(encodeWord);
-    const size = Buffer.from(String(resps.length), CODEC);
+    let resps = command.map(encodeBulk);
     return Buffer.concat([
-        CHAR_Star, size, BUF_EOL, ... resps, BUF_EOL
+        CHAR_Star, Buffer.from(String(resps.length), CODEC), BUF_EOL, ... resps, BUF_EOL
     ]);
 }
 export function encodeMultCommand(commands:Array<Array<any>>):Class_Buffer {
-    const arrs = commands.map(encodeOneResp);
-    return  Buffer.concat([ ... arrs, BUF_EOL ]);
+    return  Buffer.concat([ ... commands.map(encodeOneResp), BUF_EOL ]);
 }
 function encodeOneResp(command:Array<any>):Class_Buffer {
-    const resps = command.map(encodeWord);
-    const size = Buffer.from(String(resps.length), CODEC);
+    let resps = command.map(encodeBulk);
     return Buffer.concat([
-        CHAR_Star, size, BUF_EOL, ... resps
+        CHAR_Star, Buffer.from(String(resps.length), CODEC), BUF_EOL, ... resps
     ]);
 }
 
