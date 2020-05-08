@@ -16,9 +16,11 @@ class RespReader {
     private sock:Class_Socket;
     private killed:boolean;
     private handler:{check:(sock:Class_Socket)=>boolean, onClose:()=>void, onErr:(e)=>void, replyError:(s:string)=>void, replyData:(d:any)=>void};
+    private EMPTY_BUFFER:Class_Buffer;
     constructor(sock:Class_Socket, handler:{check:(sock:Class_Socket)=>boolean, onClose:()=>void, onErr:(e)=>void, replyError:(s:string)=>void, replyData:(d:any)=>void}) {
         this.sock=sock;
         this.handler=handler;
+        this.EMPTY_BUFFER=Buffer.from("");
     }
     public kill(){
         this.killed=true;
@@ -116,25 +118,27 @@ class RespReader {
         if(n<0){
             return null;
         }
-        let b=reader.read(n);
-        // console.log("readBulkStr",n,b);
-        if(b==null){
-            return 0;
-        }
-        while(b.length<n){
-            var t = reader.read(n-b.length);
-            if(t==null){
-                return null;
+        let b = this.EMPTY_BUFFER;;
+        if(n>0){
+            b = reader.read(n);
+            // console.log("readBulkStr",n,b);
+            if(b==null){
+                return 0;
             }
-            b=Buffer.concat([b,t]);
+            while(b.length<n){
+                var t = reader.read(n-b.length);
+                if(t==null){
+                    return null;
+                }
+                b=Buffer.concat([b,t]);
+            }
         }
         if(reader.readLine()==null){
             return 0;
         }
         return b;
     }
-}
-/**
+}/**
  * Redis client
  * "redis://127.0.0.1:6379"
  * "redis://authpwd@127.0.0.1:6379?db=1&prefix=XX:"
@@ -1102,31 +1106,21 @@ export class Redis {
         return this.send(CmdZremRangeByRank, key, start,stop).wait(castNumber);
     }
     private _z_act(castFn, scorePv:number, args:Array<any>){
+        var r=this.send(...args).wait(castFn);
         if(scorePv==0){
-            return this.send(...args).wait(castFn);
+            return r;
         }
-        var r=this.send(...args).wait();
         var list=[];
-        // if(scorePv==1){
         for(var i=0;i<r.length;i+=2){
-            var member=r[i].toString();
-            var score=Number(r[i+1].toString());
-            list.push({member:member,score:score});
+            list.push({member:r[i],score:Number(r[i+1].toString())});
         }
-        // }else{
-        //     for(var i=0;i<r.length;i+=2){
-        //         var member=r[i+1].toString();
-        //         var score=Number(r[i].toString());
-        //         list.push({member:member,score:score});
-        //     }
-        // }
         return list;
     }
-    public zPopMin(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
+    public zPopMin(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):Array<{member:string|number, score:number}>{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 1, [CmdZpopmin, key, num]);
     }
-    public zPopMax(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
+    public zPopMax(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):Array<{member:string|number, score:number}>{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 1, [CmdZpopmax, key, num]);
     }
@@ -1134,15 +1128,15 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 0, [CmdZrange, key, start, stop]);
     }
-    public zRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn:Function=castStrs):any[]{
+    public zRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn:Function=castStrs):Array<{member:string|number, score:number}>{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 1, [CmdZrange, key, start, stop, "WITHSCORES"]);
     }
-    public zRevRange(key:string|Class_Buffer, start:number, stop:number, withScore?:boolean, castFn:Function=castStrs):any[]{
+    public zRevRange(key:string|Class_Buffer, start:number, stop:number, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 0, [CmdZrevRange, key, start, stop]);
     }
-    public zRevRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn:Function=castStrs):any[]{
+    public zRevRangeWithscore(key:string|Class_Buffer, start:number, stop:number, castFn:Function=castStrs):Array<{member:string|number, score:number}>{
         key=this._fix_prefix_any(key);
         return this._z_act(castFn, 1, [CmdZrevRange, key, start, stop, "WITHSCORES"]);
     }
