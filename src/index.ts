@@ -1,6 +1,6 @@
 /// <reference types="@fibjs/types" />
-import {Redis} from "./Redis";
+import {Redis,RedisConfig} from "./Redis";
 
 export{
-    Redis
+    Redis,RedisConfig
 }

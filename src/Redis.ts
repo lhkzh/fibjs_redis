@@ -6,139 +6,10 @@ import Url=require("url");
 import QueryString = require('querystring');
 import coroutine=require("coroutine");
 import util=require('util');
-
-export class RedisError extends Error{
-    get name () {
-        return this.constructor.name
-    }
+export interface RedisConfig {
+    host:string,port:number,auth?:string, db:number, timeout:number,autoReconnect:boolean
 }
-class RespReader {
-    private sock:Class_Socket;
-    private killed:boolean;
-    private handler:{check:(sock:Class_Socket)=>boolean, onClose:()=>void, onErr:(e)=>void, replyError:(s:string)=>void, replyData:(d:any)=>void};
-    private EMPTY_BUFFER:Class_Buffer;
-    constructor(sock:Class_Socket, handler:{check:(sock:Class_Socket)=>boolean, onClose:()=>void, onErr:(e)=>void, replyError:(s:string)=>void, replyData:(d:any)=>void}) {
-        this.sock=sock;
-        this.handler=handler;
-        this.EMPTY_BUFFER=Buffer.from("");
-    }
-    public kill(){
-        this.killed=true;
-    }
-    public run(){
-        coroutine.start(this.read.bind(this));
-    }
-    private read(){
-        let self=this,handler=self.handler,sock=self.sock,reader=new io.BufferedStream(sock),line:string;
-        reader.EOL='\r\n';
-        M:while (!self.killed && handler.check(sock)){
-            try{
-                line=reader.readLine();
-                // console.log("line...",line)
-                if(line==null){
-                    !self.killed && coroutine.start(handler.onClose);
-                    break;
-                }
-                if(line[0]=='+'){
-                    handler.replyData(line.substr(1));
-                }else if(line[0]==':'){
-                    handler.replyData(Number(line.substr(1)));
-                }else if(line[0]=='$'){
-                    let raw = self.readBulkStr(reader, Number(line.substr(1)));
-                    if(raw===0){
-                        !self.killed && coroutine.start(handler.onClose);
-                        break;
-                    }
-                    handler.replyData(raw);
-                }else if(line[0]=='*'){
-                    let multOpt:{err?:string,lost?:boolean} = {};
-                    let arr = self.readMult(reader, Number(line.substr(1)), multOpt);
-                    if(multOpt.lost){
-                        !self.killed && coroutine.start(handler.onClose);
-                        break M;
-                    }
-                    if(multOpt.err){
-                        handler.replyError(multOpt.err);
-                    }
-                    handler.replyData(arr);
-                }else if(line[0]=='-'){
-                    handler.replyError(line.substr(1));
-                }else{
-                    console.error("RESP_unknow_protocol",line.length,line);
-                }
-            }catch (e) {
-                if(!self.killed){
-                    coroutine.start(()=> {
-                        console.error("Redis|on_read", e);
-                        handler.onErr(e)
-                    });
-                }
-                break;
-            }
-        }
-    }
-    private readMult(reader:Class_BufferedStream,len:number,opt:{err?:string,lost?:boolean}){
-        let arr=new Array(len), subLine:string,subRaw,subLine0:string;
-        for(var i=0;i<len;i++){
-            subLine=reader.readLine();
-            // console.log(len,i,subLine.length,subLine)
-            if(subLine==null){
-                opt.lost=true;
-                return opt;
-            }
-            subLine0=subLine.charAt(0);
-            if(subLine0=='$'){
-                subRaw=this.readBulkStr(reader, Number(subLine.substr(1)));
-                // console.log("subRaw",subRaw)
-                if(subRaw===0){
-                    opt.lost=true;
-                    return opt;
-                }
-                arr[i]=subRaw;
-            }else if(subLine0==':'){
-                arr[i]=Number(subLine.substr(1));
-            }else if(subLine0=='*'){
-                let sub = this.readMult(reader, Number(subLine.substr(1)), opt);
-                if(opt.lost){
-                    return opt;
-                }
-                arr[i]=sub;
-            }else if(subLine0=='+'){
-                arr[i]=subLine.substr(1);
-            }else if(subLine0=='-'){
-                arr[i]=subLine.substr(1);
-                opt.err=arr[i];
-            }else{
-                console.warn("RESP_UNKNOW_SUB_OPT:"+subLine);
-            }
-        }
-        return arr;
-    }
-    private readBulkStr(reader:Class_BufferedStream,n:number):any{
-        if(n<0){
-            return null;
-        }
-        let b = this.EMPTY_BUFFER;;
-        if(n>0){
-            b = reader.read(n);
-            // console.log("readBulkStr",n,b);
-            if(b==null){
-                return 0;
-            }
-            while(b.length<n){
-                var t = reader.read(n-b.length);
-                if(t==null){
-                    return null;
-                }
-                b=Buffer.concat([b,t]);
-            }
-        }
-        if(reader.readLine()==null){
-            return 0;
-        }
-        return b;
-    }
-}/**
+/**
  * Redis client
  * "redis://127.0.0.1:6379"
  * "redis://authpwd@127.0.0.1:6379?db=1&prefix=XX:"
@@ -147,7 +18,7 @@ class RespReader {
 export class Redis {
     public waitReconnect=true;//发送指令时,如果在重连中是否等待重连
     protected _prefix:{str:string,buf:Class_Buffer}={str:"",buf:null};
-    private _opts:{db:number, timeout:number, host:string,port:number,auth:string,autoReconnect:boolean};
+    private _opts:RedisConfig;
     private _sender:Class_Fiber;
     private _reader:RespReader;
     private _socket:Class_Socket;
@@ -161,44 +32,9 @@ export class Redis {
     private _sub_backs:Array<OptEvent>;//subscribe_cmd_handler
     private _sendBufs:Class_Buffer[];
     private _sendEvt:Class_Event;
-    constructor(url:string="redis://127.0.0.1:6379"){
-        if(!url || url.length<0){
-            return;
-        }
-        var urlObj=Url.parse(url);
-        var host=urlObj.hostname;
-        var port=parseInt(urlObj.port)>0?parseInt(urlObj.port):6379;
-        var auth=null;
-        if(urlObj.auth.length>0){
-            if(urlObj.username.length>0 && urlObj.password.length>0){
-                auth=urlObj.username+':'+urlObj.password;
-            }else{
-                auth=decodeURIComponent(urlObj.auth);
-            }
-        }
-        var timeout=3000;
-        var initDb=0;
-        var autoReconnect=true;
-        if(urlObj.query.length>0){
-            var query:any=QueryString.parse(urlObj.query);
-            if(query.db && parseInt(query.db)>0 && parseInt(query.db)<=16){
-                initDb=parseInt(query.db);
-            }
-            if(query.auth && query.auth.length>0){
-                auth=query.auth;
-            }
-            if(query.timeout && parseInt(query.timeout)>0){
-                timeout=parseInt(query.timeout);
-            }
-            if(query.autoReconnect){
-                var tag=String(query.autoReconnect).toLowerCase();
-                autoReconnect=tag!="0"&&tag!="false"&&tag!="no"&&tag!="";
-            }
-            if(query.prefix){
-                this.prefix=String(query.prefix).trim();
-            }
-        }
-        this._opts={db:initDb, timeout:timeout,autoReconnect:autoReconnect, auth:auth, host:host,port:port,};
+    constructor(conf:RedisConfig|string="redis://127.0.0.1:6379"){
+        if(conf===null)return;
+        this._opts=util.isString(conf)?uriToConfig(conf+""):<RedisConfig>conf;
         this._onOpen = new coroutine.Event(false);
         this._sendBufs=[];
         this._sendEvt=new coroutine.Event(false);
@@ -1202,6 +1038,24 @@ export class Redis {
     public publish(channel:string|Class_Buffer, data:any):number{
         return this.send(CmdPublish, channel, data).wait();
     }
+    public pubsub(subCmd:string|Class_Buffer, ...args):string[]|number{
+        let fn = subCmd.toString().toLocaleLowerCase()!="numpat" ? castStrs:castNumber;
+        return this.send(CmdPubsub, subCmd, ...args).wait(fn);
+    }
+    public pubsubChannels():string[]{
+        return this.send(CmdPubsub, "channels").wait(castStrs);
+    }
+    public pubsubNumSub(...channels):{[index:string]:number}{
+        let r = this.send(CmdPubsub, "numsub", ...channels).wait(castStrs);
+        let m={};
+        for(var i=0;i<r.length;i+=2){
+            m[r[i]]=Number(r[i+1]);
+        }
+        return m;
+    }
+    public pubsubNumPat():number{
+        return this.send(CmdPubsub, "numpat").wait(castNumber);
+    }
     private _real_sub(cmd, key:string, fn:(d:Class_Buffer, chan?:string)=>void, isSubscribe?:boolean){
         this.pre_sub();
         var r=this.send(cmd, key).wait();
@@ -1471,7 +1325,212 @@ class PipelineOptEvent extends OptEvent{
         }
     }
 }
+class RedisPipeLine extends Redis{
+    protected _$_real:Redis;
+    protected _$_casts:any[]=[];
+    constructor(realRedis:Redis){
+        super(null);
+        this._$_real=realRedis;
+        this._prefix=realRedis["_prefix"];
+    }
+    protected beforeSend(){
+    }
+    protected send(...args) {
+        return super.send(...args);
+    }
+    protected wait(convert?){
+        this._$_casts.push(convert);
+    }
+    public pipeSubmit():any[]{
+        if(this._temp_cmds.length<1){
+            return [];
+        }
+        if(this._temp_cmds.length!=this._$_casts.length){
+            throw "readis_some_fn_imp_check";
+        }
+        let r =this._$_real;this._$_real=null;
+        return r["pipelineSubmitBridge"](this._temp_cmds, this._$_casts);
+    }
+    protected pre_trans(){
+        throw "redis_in_pipeline";
+    }
+    protected pre_sub(){
+        throw "redis_in_pipeline";
+    }
+    protected pre_block(){
+        throw "redis_in_pipeline";
+    }
+}
 
+export class RedisError extends Error{
+    get name () {
+        return this.constructor.name
+    }
+}
+class RespReader {
+    private sock:Class_Socket;
+    private killed:boolean;
+    private handler:{check:(sock:Class_Socket)=>boolean, onClose:()=>void, onErr:(e)=>void, replyError:(s:string)=>void, replyData:(d:any)=>void};
+    private EMPTY_BUFFER:Class_Buffer;
+    constructor(sock:Class_Socket, handler:{check:(sock:Class_Socket)=>boolean, onClose:()=>void, onErr:(e)=>void, replyError:(s:string)=>void, replyData:(d:any)=>void}) {
+        this.sock=sock;
+        this.handler=handler;
+        this.EMPTY_BUFFER=Buffer.from("");
+    }
+    public kill(){
+        this.killed=true;
+    }
+    public run(){
+        coroutine.start(this.read.bind(this));
+    }
+    private read(){
+        let self=this,handler=self.handler,sock=self.sock,reader=new io.BufferedStream(sock),line:string;
+        reader.EOL='\r\n';
+        while (!self.killed && handler.check(sock)){
+            try{
+                line=reader.readLine();
+                // console.log("line...",line)
+                if(line==null){
+                    !self.killed && coroutine.start(handler.onClose);
+                    break;
+                }
+                if(line[0]=='+'){
+                    handler.replyData(line.substr(1));
+                }else if(line[0]==':'){
+                    handler.replyData(Number(line.substr(1)));
+                }else if(line[0]=='$'){
+                    let raw = self.readBulkStr(reader, Number(line.substr(1)));
+                    if(raw===0){
+                        !self.killed && coroutine.start(handler.onClose);
+                        break;
+                    }
+                    handler.replyData(raw);
+                }else if(line[0]=='*'){
+                    let multOpt:{err?:string,lost?:boolean} = {};
+                    let arr = self.readMult(reader, Number(line.substr(1)), multOpt);
+                    if(multOpt.lost){
+                        !self.killed && coroutine.start(handler.onClose);
+                        break;
+                    }
+                    if(multOpt.err){
+                        handler.replyError(multOpt.err);
+                    }
+                    handler.replyData(arr);
+                }else if(line[0]=='-'){
+                    handler.replyError(line.substr(1));
+                }else{
+                    console.error("RESP_unknow_protocol",line.length,line);
+                }
+            }catch (e) {
+                if(!self.killed){
+                    coroutine.start(()=> {
+                        console.error("Redis|on_read", e);
+                        handler.onErr(e)
+                    });
+                }
+                break;
+            }
+        }
+    }
+    private readMult(reader:Class_BufferedStream,len:number,opt:{err?:string,lost?:boolean}){
+        let arr=new Array(len), subLine:string,subRaw,subLine0:string;
+        for(var i=0;i<len;i++){
+            subLine=reader.readLine();
+            // console.log(len,i,subLine.length,subLine)
+            if(subLine==null){
+                opt.lost=true;
+                return opt;
+            }
+            subLine0=subLine.charAt(0);
+            if(subLine0=='$'){
+                subRaw=this.readBulkStr(reader, Number(subLine.substr(1)));
+                // console.log("subRaw",subRaw)
+                if(subRaw===0){
+                    opt.lost=true;
+                    return opt;
+                }
+                arr[i]=subRaw;
+            }else if(subLine0==':'){
+                arr[i]=Number(subLine.substr(1));
+            }else if(subLine0=='*'){
+                let sub = this.readMult(reader, Number(subLine.substr(1)), opt);
+                if(opt.lost){
+                    return opt;
+                }
+                arr[i]=sub;
+            }else if(subLine0=='+'){
+                arr[i]=subLine.substr(1);
+            }else if(subLine0=='-'){
+                arr[i]=subLine.substr(1);
+                opt.err=arr[i];
+            }else{
+                console.warn("RESP_UNKNOW_SUB_OPT:"+subLine);
+            }
+        }
+        return arr;
+    }
+    private readBulkStr(reader:Class_BufferedStream,n:number):any{
+        if(n<0){
+            return null;
+        }
+        let b = this.EMPTY_BUFFER;;
+        if(n>0){
+            b = reader.read(n);
+            // console.log("readBulkStr",n,b);
+            if(b==null){
+                return 0;
+            }
+            while(b.length<n){
+                var t = reader.read(n-b.length);
+                if(t==null){
+                    return null;
+                }
+                b=Buffer.concat([b,t]);
+            }
+        }
+        if(reader.readLine()==null){
+            return 0;
+        }
+        return b;
+    }
+}
+
+function uriToConfig(uri:string):RedisConfig {
+    var urlObj=Url.parse(uri);
+    var host=urlObj.hostname;
+    var port=parseInt(urlObj.port)>0?parseInt(urlObj.port):6379;
+    var auth=null;
+    if(urlObj.auth.length>0){
+        if(urlObj.username.length>0 && urlObj.password.length>0){
+            auth=urlObj.username+':'+urlObj.password;
+        }else{
+            auth=decodeURIComponent(urlObj.auth);
+        }
+    }
+    var timeout=3000;
+    var initDb=0;
+    var autoReconnect=true;
+    if(urlObj.query.length>0){
+        var query:any=QueryString.parse(urlObj.query);
+        if(query.db && parseInt(query.db)>0 && parseInt(query.db)<=16){
+            initDb=parseInt(query.db);
+        }
+        if(query.auth && query.auth.length>0){
+            auth=query.auth;
+        }
+        if(query.timeout && parseInt(query.timeout)>0){
+            timeout=parseInt(query.timeout);
+        }
+        if(query.autoReconnect){
+            var tag=String(query.autoReconnect).toLowerCase();
+            autoReconnect=tag!="0"&&tag!="false"&&tag!="no"&&tag!="";
+        }
+        if(query.prefix){
+            this.prefix=String(query.prefix).trim();
+        }
+    }
+    return {db:initDb, timeout:timeout,autoReconnect:autoReconnect, auth:auth, host:host,port:port,};
+}
 function toArray (hash, array) {
     for (const key of Object.keys(hash)) {
         array.push(key, hash[key])
@@ -1574,44 +1633,6 @@ Redis["castBigInt"]=castBigInt;
 Redis["castBigInts"]=castBigInts;
 Redis["castBool"]=castBool;
 
-class RedisPipeLine extends Redis{
-    protected _$_real:Redis;
-    protected _$_casts:any[]=[];
-    constructor(realRedis:Redis){
-        super("");
-        this._$_real=realRedis;
-        this._prefix=realRedis["_prefix"];
-    }
-    protected beforeSend(){
-    }
-    protected send(...args) {
-        return super.send(...args);
-    }
-    protected wait(convert?){
-        this._$_casts.push(convert);
-    }
-    public pipeSubmit():any[]{
-        if(this._temp_cmds.length<1){
-            return [];
-        }
-        if(this._temp_cmds.length!=this._$_casts.length){
-            throw "readis_some_fn_imp_check";
-        }
-        let r =this._$_real;this._$_real=null;
-        return r["pipelineSubmitBridge"](this._temp_cmds, this._$_casts);
-    }
-    protected pre_trans(){
-        throw "redis_in_pipeline";
-    }
-    protected pre_sub(){
-        throw "redis_in_pipeline";
-    }
-    protected pre_block(){
-        throw "redis_in_pipeline";
-    }
-}
-
-
 const CODEC = 'utf8';
 const CHAR_Star   = Buffer.from('*', CODEC);
 const CHAR_Dollar = Buffer.from('$', CODEC);
@@ -1646,6 +1667,7 @@ const CmdRandomkey=Buffer.from('randomkey');
 const CmdRename=Buffer.from('rename');
 const CmdRenameNX=Buffer.from('renamenx');
 
+const CmdPubsub=Buffer.from('pubsub');
 const CmdSubscribe=Buffer.from('subscribe');
 const CmdPSubscribe=Buffer.from('psubscribe');
 const CmdUnSubscribe=Buffer.from('unsubscribe');
