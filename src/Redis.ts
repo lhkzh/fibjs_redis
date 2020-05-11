@@ -7,7 +7,7 @@ import QueryString = require('querystring');
 import coroutine=require("coroutine");
 import util=require('util');
 export interface RedisConfig {
-    host:string,port:number,auth?:string, db:number, timeout:number,autoReconnect:boolean
+    host:string,port:number,auth?:string, db:number, timeout:number,autoReconnect:boolean,prefix?:string,
 }
 /**
  * Redis client
@@ -35,6 +35,7 @@ export class Redis {
     constructor(conf:RedisConfig|string="redis://127.0.0.1:6379"){
         if(conf===null)return;
         this._opts=util.isString(conf)?uriToConfig(conf+""):<RedisConfig>conf;
+        this.prefix = this._opts.prefix;
         this._onOpen = new coroutine.Event(false);
         this._sendBufs=[];
         this._sendEvt=new coroutine.Event(false);
@@ -825,7 +826,15 @@ export class Redis {
     }
     public sPop(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);
-        return this.send(CmdSpop, key, num).wait(castFn);
+        return this.send(CmdSpop, key, num).wait(bufs=>{
+            if(bufs==null)return bufs;
+            if(!util.isArray(bufs))bufs=[bufs];
+            return castFn(bufs);
+        });
+    }
+    public sPopOne(key:string|Class_Buffer, castFn:Function=castStr):string|number|any{
+        key=this._fix_prefix_any(key);
+        return this.send(CmdSpop, key).wait(castFn);
     }
     public sRandmember(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);
@@ -1510,6 +1519,7 @@ function uriToConfig(uri:string):RedisConfig {
     var timeout=3000;
     var initDb=0;
     var autoReconnect=true;
+    var prefix=null;
     if(urlObj.query.length>0){
         var query:any=QueryString.parse(urlObj.query);
         if(query.db && parseInt(query.db)>0 && parseInt(query.db)<=16){
@@ -1526,10 +1536,10 @@ function uriToConfig(uri:string):RedisConfig {
             autoReconnect=tag!="0"&&tag!="false"&&tag!="no"&&tag!="";
         }
         if(query.prefix){
-            this.prefix=String(query.prefix).trim();
+            prefix=String(query.prefix).trim();
         }
     }
-    return {db:initDb, timeout:timeout,autoReconnect:autoReconnect, auth:auth, host:host,port:port,};
+    return {db:initDb, timeout:timeout,autoReconnect:autoReconnect, auth:auth, host:host,port:port, prefix:prefix};
 }
 function toArray (hash, array) {
     for (const key of Object.keys(hash)) {
@@ -1556,9 +1566,11 @@ function castStr(buf:any):string {
     return buf ? buf.toString():null;
 }
 function castStrs(bufs):string[] {
-    bufs.forEach((v,k,a)=>{
-        a[k]=v?v.toString():v;
-    });
+    if(util.isArray(bufs)){
+        bufs.forEach((v,k,a)=>{
+            a[k]=v?v.toString():v;
+        });
+    }
     return bufs;
 }
 function deepCastStrs(r:Array<any>){
@@ -1582,13 +1594,15 @@ function castNumber(buf:any):number {
     return buf;
 }
 function castNumbers(bufs):number[] {
-    bufs.forEach((v, k, a) => {
-        if (v != null) {
-            var s=v.toString();
-            var n = Number(s);
-            a[k] = isNaN(n) ? s:n;
-        }
-    });
+    if(util.isArray(bufs)){
+        bufs.forEach((v, k, a) => {
+            if (v != null) {
+                var s=v.toString();
+                var n = Number(s);
+                a[k] = isNaN(n) ? s:n;
+            }
+        });
+    }
     return bufs;
 }
 function castBigInt(buf:any) {
@@ -1598,11 +1612,13 @@ function castBigInt(buf:any) {
     return buf;
 }
 function castBigInts(bufs):any[]{
-    bufs.forEach((v, k, a) => {
-        if (v != null) {
-            a[k] = global["BigInt"](v.toString());
-        }
-    });
+    if(util.isArray(bufs)){
+        bufs.forEach((v, k, a) => {
+            if (v != null) {
+                a[k] = global["BigInt"](v.toString());
+            }
+        });
+    }
     return bufs;
 }
 function castAuto(a:any):any{
