@@ -323,7 +323,7 @@ export class Redis {
         this._mult_backs=null;
         return this.send(CmdExec).wait(function(a){
             a.forEach((v,k,o)=>{
-                o[k] = fns[k]?fns[k](v):v;
+                o[k] = v!=null&&fns[k]?fns[k](v):v;
             });
             return a;
         });
@@ -826,11 +826,7 @@ export class Redis {
     }
     public sPop(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);
-        return this.send(CmdSpop, key, num).wait(bufs=>{
-            if(bufs==null)return bufs;
-            if(!util.isArray(bufs))bufs=[bufs];
-            return castFn(bufs);
-        });
+        return this.send(CmdSpop, key, num).wait(castFn);
     }
     public sPopOne(key:string|Class_Buffer, castFn:Function=castStr):string|number|any{
         key=this._fix_prefix_any(key);
@@ -1287,7 +1283,7 @@ class OptEvent{
         if(this.err){
             throw this.err;
         }
-        return convert ? convert(this.data):this.data;
+        return convert&&this.data!=null ? convert(this.data):this.data;
     }
     public then(data){
         this.data=data;
@@ -1554,26 +1550,22 @@ function toZsetArray (hash, array) {
     return array
 }
 function castBool(buf:any):boolean {
-    if(util.isBoolean(buf)){
-        return buf;
-    }
-    if(util.isNumber(buf)){
-        return buf!=0;
-    }
-    return buf!=null;
+    return !!buf;
 }
 function castStr(buf:any):string {
-    return buf ? buf.toString():null;
+    return buf.toString();
 }
 function castStrs(bufs):string[] {
     if(util.isArray(bufs)){
         bufs.forEach((v,k,a)=>{
             a[k]=v?v.toString():v;
         });
+    }else{
+        bufs = [bufs==null?null:bufs.toString()];
     }
     return bufs;
 }
-function deepCastStrs(r:Array<any>){
+function deepCastStrs(r:Array<any>):string[]{
     if(util.isArray(r)){
         r.forEach((v,k,a)=>{
             if(util.isBuffer(v)){
@@ -1582,14 +1574,14 @@ function deepCastStrs(r:Array<any>){
                 a[k] = deepCastStrs(v);
             }
         })
+    }else{
+        r = [r==null?null:r.toString()];
     }
     return r;
 }
 function castNumber(buf:any):number {
-    if(buf){
-        if(!util.isNumber(buf)){
-            buf=Number(buf.toString());
-        }
+    if(!util.isNumber(buf)){
+        buf=Number(buf.toString());
     }
     return buf;
 }
@@ -1597,33 +1589,36 @@ function castNumbers(bufs):number[] {
     if(util.isArray(bufs)){
         bufs.forEach((v, k, a) => {
             if (v != null) {
-                var s=v.toString();
-                var n = Number(s);
-                a[k] = isNaN(n) ? s:n;
+                a[k] = Number(v.toString());
             }
         });
+    }else{
+        bufs = [bufs==null?null:Number(bufs.toString())];
     }
     return bufs;
 }
-function castBigInt(buf:any) {
+function castBigInt(buf:any):BigInt {
     if(buf){
-        buf=global["BigInt"](buf.toString());
+        buf=BigInt(buf.toString());
     }
     return buf;
 }
-function castBigInts(bufs):any[]{
+function castBigInts(bufs):BigInt[]{
     if(util.isArray(bufs)){
         bufs.forEach((v, k, a) => {
             if (v != null) {
-                a[k] = global["BigInt"](v.toString());
+                a[k] = BigInt(v.toString());
             }
         });
+    }else{
+        bufs = [bufs==null?null:BigInt(bufs.toString())];
     }
     return bufs;
 }
 function castAuto(a:any):any{
     if(a==null)return a;
     if(util.isNumber(a))return a;
+    if(util.isBoolean(a))return a;
     if(Buffer.isBuffer(a)){
         a=a.toString();
         var n=Number(a);

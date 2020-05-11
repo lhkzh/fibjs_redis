@@ -21,12 +21,15 @@ console.log('pttl',r.pttl('f01')<=1000);
 console.log('del',r.del('f01','f02','f03','f04')==3);
 console.log();
 r.del('flist');
-console.log('lpush',r.lPush('flist',"a","b","c")==2);
+console.log('lpush',r.lPush('flist',"a","b","c")==3);
 console.log('lpushX_had',r.lPushx('flist','a')>0);
 console.log('lpushX_nil',r.lPushx('flist_nil','a')==0);
 console.log('lpop',r.lPop('flist')=='a');
-console.log('lrange',JSON.stringify(r.lRange('flist',0,-1))=='["c","b","a"]');
 console.log('llen',r.lLen('flist')==3);
+console.log('lrange',JSON.stringify(r.lRange('flist',0,-1))=='["c","b","a"]');
+r.del('flist');
+r.rPush('flist',"a","","b","");
+console.log('lrange',JSON.stringify(r.lRange('flist',0,-1))=='["a","","b",""]')
 r.del('flist');
 console.log();
 r.del('fmap');
@@ -40,17 +43,17 @@ console.log('hvals',JSON.stringify(r.hVals('fmap'))=='["va","vb","vc","vd"]');
 console.log('hmget', r.hMGet('fmap', ['a','c']).join(',')=='va,vc');
 console.log('hincrby', r.hIncrBy('fmap', 'int',3)==3);
 console.log('hincrby', r.hIncrBy('fmap', 'int',-2)==1);
-console.log('hscan', JSON.stringify(r.hscan('fmap',0,'in*',1000))=='[0,{"int":"1"}');
-// r.del('hmap');
-// console.log();
-r.del('fset');
-console.log('sadd', r.sAdd('fset',"a","b","c",0,1,2,3,4,5)==8);
+console.log('hscan', JSON.stringify(r.hscan('fmap',0,'in*',1000))=='[0,{"int":"1"}]');
+r.del('hmap');
+console.log();
+r.del('fset',"fset_nil");
+console.log('sadd', r.sAdd('fset',"a","b","c",0,1,2,3,4,5)==9);
 console.log('srem',r.sRem('fset',["a","b","c"])==3);
 console.log("scard",r.sCard('fset')==6);
 console.log("smembers",r.sMembers('fset').length==6);
 console.log("sIsmember",r.sIsmember('fset',"a")==false);
 console.log("sIsmember",r.sIsmember('fset',"1")==true);
-console.log("spop",r.sPop('fset',1)!=null);
+console.log("spop",r.sPop('fset',1)!=null,r.sPopOne("fset_nil")==null,r.sPop("fset_nil").length==0);
 console.log("sscan",r.sscan("fset","0","*",100))
 r.del('fset');
 console.log();
@@ -61,7 +64,7 @@ p.set("f01","data-01",2);
 p.set("f02","data-02",2);
 p.mget(["f01","f02"]);
 p.del(['f01','f02'])
-console.log("pipeline",p.pipeSubmit().length==4, p.exists('f01'));
+console.log("pipeline",p.pipeSubmit().length==4, r.exists('f01')==false);
 
 var m = r.multi();
 m.exists("f01");
@@ -70,7 +73,7 @@ m.get("f01");
 m.pttl("f03");
 m.publish("foo","foo!");
 m.scan(0,"*",100);
-console.log("mult/exec",m.exec().length==5);
+console.log("mult/exec",m.exec().length==6);
 
 var s=new Redis();
 s.subscribe("foo",function(msg,channel){
