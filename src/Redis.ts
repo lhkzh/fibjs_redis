@@ -319,9 +319,9 @@ export class Redis {
     }
     public exec():any[]{
         this.pre_trans();
-        var fns=this._mult_backs;
+        let fns=this._mult_backs;
         this._mult_backs=null;
-        return this.send(CmdExec).wait(function(a){
+        return this.send(CmdExec).wait(a=>{
             a.forEach((v,k,o)=>{
                 o[k] = v!=null&&fns[k]?fns[k](v):v;
             });
@@ -953,17 +953,9 @@ export class Redis {
         }
         var list=[];
         for(var i=0;i<r.length;i+=2){
-            list.push({member:r[i],score:Number(r[i+1].toString())});
+            list.push({member:r[i],score:Number(r[i+1])});
         }
         return list;
-    }
-    public zPopMin(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):Array<{member:string|number, score:number}>{
-        key=this._fix_prefix_any(key);
-        return this._z_act(castFn, 1, [CmdZpopmin, key, num]);
-    }
-    public zPopMax(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):Array<{member:string|number, score:number}>{
-        key=this._fix_prefix_any(key);
-        return this._z_act(castFn, 1, [CmdZpopmax, key, num]);
     }
     public zRange(key:string|Class_Buffer, start:number, stop:number, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);
@@ -1003,37 +995,37 @@ export class Redis {
         }
         return this._z_act(castFn, opts.withScore?1:0, args);
     }
-    public bzPopMin(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn:Function=castStr):Array<string|number>{
+    public zPopMin(key:string|Class_Buffer, num:number=1, castFn:Function=castAuto):Array<{member:string|number, score:number}>{
+        key=this._fix_prefix_any(key);
+        return this._z_act(castFn, 1, [CmdZpopmin, key, num]);
+    }
+    public zPopMax(key:string|Class_Buffer, num:number=1, castFn:Function=castAuto):Array<{member:string|number, score:number}>{
+        key=this._fix_prefix_any(key);
+        return this._z_act(castFn, 1, [CmdZpopmax, key, num]);
+    }
+    public bzPopMin(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn:Function=castAuto):Array<string|number>{
         this.pre_block();
         key=this._fix_prefix_any(key);
         var args = Array.isArray(key) ? [CmdBzPopMin, ...key, timeout]:[CmdBzPopMin, key, timeout];
-        var r=this.send(...args).wait();
-        r[0]=r[0].toString();
-        r[1]=Number(r[1].toString());
-        r[2]=castFn(r[2]);
-        return r;
+        return this.send(...args).wait(castFn);
     }
-    public bzPopMax(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn:Function=castStr):Array<string|number>{
+    public bzPopMax(key:string|Class_Buffer|Array<string|Class_Buffer>, timeout:number=0, castFn:Function=castAuto):Array<string|number>{
         this.pre_block();
         key=this._fix_prefix_any(key);
         var args = Array.isArray(key) ? [CmdBzPopMax, ...key, timeout]:[CmdBzPopMax, key, timeout];
-        var r=this.send(...args).wait();
-        r[0]=r[0].toString();
-        r[1]=Number(r[1].toString());
-        r[2]=castFn(r[2]);
-        return r;
+        return this.send(...args).wait(castFn);
     }
 
-    public pfAdd(key:string|Class_Buffer, ...elements){
+    public pfAdd(key:string|Class_Buffer, ...elements):number{
         var keys=util.isArray(elements[0])?elements[0]:elements;
         keys=this._fix_prefix_any(keys);
-        return this.send(CmdPfadd, ...keys).wait();
+        return this.send(CmdPfadd, ...keys).wait(castNumber);
     }
-    public pfCount(key:string|Class_Buffer){
+    public pfCount(key:string|Class_Buffer):number{
         key=this._fix_prefix_any(key);
-        return this.send(CmdPfcount, key).wait();
+        return this.send(CmdPfcount, key).wait(castNumber);
     }
-    public pfMerge(destKey:string|Class_Buffer, ...sourceKeys){
+    public pfMerge(destKey:string|Class_Buffer, ...sourceKeys):boolean{
         var keys=util.isArray(sourceKeys[0])?sourceKeys[0]:sourceKeys;
         keys.unshift(destKey);
         keys=this._fix_prefix_any(sourceKeys);
