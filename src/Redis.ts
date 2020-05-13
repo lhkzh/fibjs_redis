@@ -752,7 +752,7 @@ export class Redis {
     public hDel(key:string|Class_Buffer, ...fields):number{
         key=this._fix_prefix_any(key);
         fields=util.isArray(fields[0])?fields[0]:fields;
-        return this.send(CmdHdel, ...fields).wait(castNumber);
+        return this.send(CmdHdel, key, ...fields).wait(castNumber);
     }
     public hKeys(key:string|Class_Buffer, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);

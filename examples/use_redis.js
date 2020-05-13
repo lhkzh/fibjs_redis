@@ -44,6 +44,7 @@ console.log('hmget', r.hMGet('fmap', ['a','c']).join(',')=='va,vc');
 console.log('hincrby', r.hIncrBy('fmap', 'int',3)==3);
 console.log('hincrby', r.hIncrBy('fmap', 'int',-2)==1);
 console.log('hscan', JSON.stringify(r.hscan('fmap',0,'in*',1000))=='[0,{"int":"1"}]');
+console.log('hdel', r.hDel('fmap','a')==1, r.hDel('hmap','unknow')==0);
 r.del('hmap');
 console.log();
 r.del('fset',"fset_nil");
