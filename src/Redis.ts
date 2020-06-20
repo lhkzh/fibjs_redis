@@ -832,11 +832,24 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdSpop, key).wait(castFn);
     }
+
+    /**
+     * @deprecated
+     */
     public sRandmember(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
+        return this.sRandMember(key, num, castFn);
+    }
+    /**
+     * @deprecated
+     */
+    public sIsmember(key:string|Class_Buffer, member:any):boolean{
+        return this.sIsmember(key, member);
+    }
+    public sRandMember(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);
         return this.send(CmdSrandmember, key, num).wait(castFn);
     }
-    public sIsmember(key:string|Class_Buffer, member:any):boolean{
+    public sIsMember(key:string|Class_Buffer, member:any):boolean{
         key=this._fix_prefix_any(key);
         return this.send(CmdSismember, key, member).wait(castBool);
     }
@@ -1261,6 +1274,8 @@ export class Redis {
 
     public static castBigInt:(bufs:any)=>any;
     public static castBigInts:(bufs:any)=>any[];
+
+    public static castJSON:(bufs:any)=>any;
 }
 
 class OptEvent{
@@ -1626,7 +1641,16 @@ function castAuto(a:any):any{
     }
     return a;
 }
-
+function castJSON(bufs):string[] {
+    if(util.isArray(bufs)){
+        bufs.forEach((v,k,a)=>{
+            a[k]=v?JSON.parse(v.toString()):v;
+        });
+    }else{
+        bufs = bufs==null?null:JSON.parse(bufs.toString());
+    }
+    return bufs;
+}
 Redis["castAuto"]=castAuto;
 Redis["castStr"]=castStr;
 Redis["castStrs"]=castStrs;
@@ -1635,6 +1659,7 @@ Redis["castNumbers"]=castNumbers;
 Redis["castBigInt"]=castBigInt;
 Redis["castBigInts"]=castBigInts;
 Redis["castBool"]=castBool;
+Redis["castJSON"]=castJSON;
 
 const CODEC = 'utf8';
 const CHAR_Star   = Buffer.from('*', CODEC);
