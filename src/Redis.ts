@@ -1302,9 +1302,11 @@ class OptEvent{
         this.evt=new coroutine.Event(false);
     }
     public wait(convert?:Function){
+        let e = new RedisError();
         this.evt.wait();
         if(this.err){
-            throw this.err;
+            e.message = String(this.err);
+            throw e;
         }
         return convert&&this.data!=null ? convert(this.data):this.data;
     }
@@ -1329,10 +1331,12 @@ class PipelineOptEvent extends OptEvent{
         this.errs=[];
     }
     public waitAll(throwErr?:boolean){
+        let e = new RedisError();
         this.evt.wait();
         if(this.errs.length>0){
             if(throwErr){
-                throw this.errs[0];
+                e.message = String(this.errs[0]);
+                throw e;
             }
         }
         return this.rets;
