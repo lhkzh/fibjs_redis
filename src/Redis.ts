@@ -1028,6 +1028,22 @@ export class Redis {
         var args = Array.isArray(key) ? [CmdBzPopMax, ...key, timeout]:[CmdBzPopMax, key, timeout];
         return this.send(...args).wait(castFn);
     }
+    public zUnionStore(destKey:string|Class_Buffer, numkeys:number, srcKeys:string|Class_Buffer|Array<string|Class_Buffer>, weights?:Array<number>):number{
+        destKey=this._fix_prefix_any(destKey);
+        let keys=this._fix_prefix_any(util.isArray(<any>srcKeys) ? <Array<string>>srcKeys:[srcKeys]);
+        if(weights && weights.length>0){
+            return this.send(CmdZUNIONSTORE, destKey, numkeys, ...keys, "WEIGHTS", ...weights).wait(castNumber);
+        }
+        return this.send(CmdZUNIONSTORE, destKey, numkeys, ...keys).wait(castNumber);
+    }
+    public zInterStore(destKey:string|Class_Buffer, numkeys:number, srcKeys:string|Class_Buffer|Array<string|Class_Buffer>, weights?:Array<number>):number{
+        destKey=this._fix_prefix_any(destKey);
+        let keys=this._fix_prefix_any(util.isArray(<any>srcKeys) ? <Array<string>>srcKeys:[srcKeys]);
+        if(weights && weights.length>0){
+            return this.send(CmdZINTERSTORE, destKey, numkeys, ...keys, "WEIGHTS", ...weights).wait(castNumber);
+        }
+        return this.send(CmdZINTERSTORE, destKey, numkeys, ...keys).wait(castNumber);
+    }
 
     public pfAdd(key:string|Class_Buffer, ...elements):number{
         var keys=util.isArray(elements[0])?elements[0]:elements;
@@ -1641,13 +1657,13 @@ function castAuto(a:any):any{
     }
     return a;
 }
-function castJSON(bufs):string[] {
+function castJSON(bufs):any {
     if(util.isArray(bufs)){
         bufs.forEach((v,k,a)=>{
             a[k]=v?JSON.parse(v.toString()):v;
         });
     }else{
-        bufs = bufs==null?null:JSON.parse(bufs.toString());
+        bufs = JSON.parse(bufs.toString());
     }
     return bufs;
 }
@@ -1815,6 +1831,8 @@ const CmdZrangeByLex=Buffer.from('zrangebylex');
 const CmdZrevrangeByLex=Buffer.from('zremrangebylex');
 const CmdBzPopMin=Buffer.from('bzpopmin');
 const CmdBzPopMax=Buffer.from('bzpopmax');
+const CmdZUNIONSTORE=Buffer.from("zunionstore");
+const CmdZINTERSTORE=Buffer.from("zinterstore");
 
 const CmdWatch=Buffer.from('watch');
 const CmdUnWatch=Buffer.from('unwatch');
