@@ -9,7 +9,7 @@ import util=require('util');
 export interface RedisConfig {
     host:string,port:number,auth?:string, db:number, timeout:number,autoReconnect:boolean,prefix?:string,
 }
-/**
+/**RedisError
  * Redis client
  * "redis://127.0.0.1:6379"
  * "redis://authpwd@127.0.0.1:6379?db=1&prefix=XX:"
@@ -24,6 +24,7 @@ export class Redis {
     private _socket:Class_Socket;
     private _onOpen:Class_Event;
     private _connected:boolean;
+    private _reconIng:boolean;
     private _killed:boolean;
     private _backs:Array<OptEvent>;//request_response_fn
     private _mult_backs:Array<Function>;//mult_exec_convert
@@ -63,6 +64,7 @@ export class Redis {
         this._socket=sock;
         this._backs=[];
         this._connected=true;
+        this._reconIng=false;
         this._pre_Fibers();
         this.pre_sub_onConnect();
         this._onOpen.set();
@@ -70,8 +72,9 @@ export class Redis {
     }
     private _pre_Fibers(){
         let T=this;
+        const local_port = T._socket.localPort;
         T._socket.timeout=-1;
-        T._sender = coroutine.start(function(){
+        T._sender = coroutine.start(()=>{
             let sock=T._socket, buf:Class_Buffer;
             while(T._socket===sock && T._connected){
                 if(T._sendBufs.length>0){
@@ -80,7 +83,7 @@ export class Redis {
                     try{
                         sock.send(buf);
                     }catch (e) {
-                        console.error("Redis|on_send",e);
+                        console.error("Redis|on_send",local_port,e);
                         coroutine.start(()=>{
                             T._on_err(e, true);
                         });
@@ -99,6 +102,13 @@ export class Redis {
             onClose:T._on_lost.bind(T),
             onErr:T._on_err.bind(T),
             replyError:err=>{
+                // err=String(err); return err.includes("NOAUTH") || err.includes("rpc");
+                // return String(err).includes("wrong number")==false;//除了参数不对，全部认为是致命错误
+                if(String(err).includes("wrong number")==false){
+                    console.error("Redis|on_reply_error",local_port,err);
+                    T._on_err(err, true);
+                    return;
+                }
                 try{
                     if (T._sub_backs) {
                         T._sub_backs.shift().fail(new RedisError(err));
@@ -107,7 +117,7 @@ export class Redis {
                     }
                 }catch(exx){
                     // console.error("--->>>", (reply||"null").toString(),exx)
-                    console.error("Redis|on_reply",exx);
+                    console.error("Redis|on_reply_error",local_port,exx);
                 }
             },
             replyData:reply=>{
@@ -141,40 +151,60 @@ export class Redis {
         this._on_err(new Error("io_error"), true);
     }
     private _on_err(e, deadErr?:boolean){
-        if(this._socket==null){
+        console.error("Redis|_on_err%s",this._opts.host+":"+this._opts.port, e);
+        if(this._socket==null || this._connected==false){
             return;
         }
-        console.error("Redis|_on_err%s",this._opts.host+":"+this._opts.port, e);
         this._connected=false;
-        if(this._reader){
-            this._reader.kill();
-        }
+        this.try_drop_worker();
+        this.try_drop_cbks(e);
+        this.try_auto_reconn();
+    }
+    private try_drop_cbks(e){
+        var backs=this._backs, sub_backs=this._sub_backs;
+        this._backs=[];this._sub_backs=null;
+        if(sub_backs){backs=backs.concat(...sub_backs)}
         try{
-            this._socket.close();
-        }catch (e) {
-        }
-        this._onOpen.clear();
-        this._sendBufs.length=0;
-        this._sendEvt.set();
-        var backs=this._backs;this._backs=[];
-        backs.forEach(operation=>{
-            operation.fail(e);
-        });
-        backs=this._sub_backs;this._sub_backs=null;
-        if(backs){
             backs.forEach(operation=>{
                 operation.fail(e);
             });
+            if(sub_backs){
+                sub_backs.forEach(operation=>{
+                    operation.fail(e);
+                });
+            }
+        }catch (_e_) {
         }
+        this._backs=[];
+        this._sub_backs=null;
         this._mult_backs=null;
-        if(this._opts.autoReconnect && !this._killed){
-            var i=0;
+    }
+    private try_drop_worker(){
+        try{
+            this._connected=false;
+            this._sendBufs.length=0;
+            this._sendEvt.set();
+            this._reader&&this._reader.kill();
+            try{
+                this._socket.close();
+            }catch (e) {
+            }
+            this._onOpen.clear();
+        }catch (e) {
+        }
+    }
+    //开始重连
+    private try_auto_reconn(){
+        if(this._opts.autoReconnect && !this._killed && !this._reconIng){
+            this.try_drop_worker();
+            this._reconIng = true;
+            let i=0;
             while(!this._connected && !this._killed){
                 try{
                     this._do_conn();
-                    break;
+                    return;
                 }catch (e) {
-                    console.error("Redis|%s",this._opts.host+":"+this._opts.port, e);
+                    console.error("Redis|auto_reconn",i,this._opts.host+":"+this._opts.port, e);
                     try{
                         this._socket.close();
                     }catch (e) {
@@ -189,18 +219,14 @@ export class Redis {
         this._killed=true;
         this._connected=false;
         var sock=this._socket;
+        this.try_drop_worker();
         this._socket=null;
-        this._sendEvt.set();
-        this._reader&&this._reader.kill();
         try{
             sock.close();
         }catch (e) {
         }
-        var backs=this._backs;this._backs=[];
         var e=new Error("io_close");
-        backs.forEach(operation=>{
-            operation.fail(e);
-        });
+        this.try_drop_cbks(e);
     }
     protected isInPipeline(){
         return false;
@@ -210,11 +236,11 @@ export class Redis {
             throw new RedisError("io_had_closed");
         }
         if(!this._connected && this._opts.autoReconnect){
-            if(this.waitReconnect){
+            if(this.waitReconnect && this._reconIng){
                 this._onOpen.wait();//等待重连
             }
         }
-        if(!this._socket || !this._connected){
+        if(!this._connected){
             throw new RedisError("io_error");
         }
     }
@@ -404,11 +430,11 @@ export class Redis {
         keys=this._fix_prefix_any(keys);
         return this.send(CmdUnlink, ...keys).wait(castNumber);
     }
-    public expire(key:string|Class_Buffer, ttl:number=0):boolean{
+    public expire(key:string|Class_Buffer, ttl:number):boolean{
         key=this._fix_prefix_any(key);
         return this.send(CmdExpire, key,ttl).wait(castBool);
     }
-    public pexpire(key:string|Class_Buffer, ttl:number=0):boolean{
+    public pexpire(key:string|Class_Buffer, ttl:number):boolean{
         key=this._fix_prefix_any(key);
         return this.send(CmdPexpire, key,ttl).wait(castBool);
     }
@@ -424,30 +450,29 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdPersist, key).wait(castBool);
     }
-    public set(key:string|Class_Buffer, val:any, ttl:number=0):boolean{
+    public set(key:string|Class_Buffer, val:any, ttl:number=-1):boolean{
         key=this._fix_prefix_any(key);
-        if(ttl<1){
+        if(ttl<0){
             return this.send(CmdSet,key,val).wait(castBool);
         }
         return this.send(CmdSet,key,val,CmdOptEX,ttl).wait(castBool);
     }
-    public add(key:string|Class_Buffer, val:any, ttl:number=0):boolean{
+    // set if not exists
+    public add(key:string|Class_Buffer, val:any, ttl:number=-1):boolean{
+        return this.setNX(key, val, ttl);
+    }
+    // set if not exists
+    public setNX(key:string|Class_Buffer, val:any, ttl:number=-1):boolean{
         key=this._fix_prefix_any(key);
-        if(ttl<1){
+        if(ttl<0){
             return this.send(CmdSet,key,val,CmdOptNX).wait(castBool);
         }
         return this.send(CmdSet,key,val,CmdOptEX,ttl,CmdOptNX).wait(castBool);
     }
-    public setNX(key:string|Class_Buffer, val:any, ttl:number=0):boolean{
+    // set if exists
+    public setXX(key:string|Class_Buffer, val:any, ttl:number=-1):boolean{
         key=this._fix_prefix_any(key);
-        if(ttl<1){
-            return this.send(CmdSet,key,val,CmdOptNX).wait(castBool);
-        }
-        return this.send(CmdSet,key,val,CmdOptEX,ttl,CmdOptNX).wait(castBool);
-    }
-    public setXX(key:string|Class_Buffer, val:any, ttl:number=0):boolean{
-        key=this._fix_prefix_any(key);
-        if(ttl<1){
+        if(ttl<0){
             return this.send(CmdSet,key,val,CmdOptXX).wait(castBool);
         }
         return this.send(CmdSet,key,val,CmdOptEX,ttl,CmdOptXX).wait(castBool);
@@ -832,7 +857,14 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this.send(CmdSpop, key).wait(castFn);
     }
-
+    public sRandMember(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
+        key=this._fix_prefix_any(key);
+        return this.send(CmdSrandmember, key, num).wait(castFn);
+    }
+    public sIsMember(key:string|Class_Buffer, member:any):boolean{
+        key=this._fix_prefix_any(key);
+        return this.send(CmdSismember, key, member).wait(castBool);
+    }
     /**
      * @deprecated
      */
@@ -844,14 +876,6 @@ export class Redis {
      */
     public sIsmember(key:string|Class_Buffer, member:any):boolean{
         return this.sIsmember(key, member);
-    }
-    public sRandMember(key:string|Class_Buffer, num:number=1, castFn:Function=castStrs):any[]{
-        key=this._fix_prefix_any(key);
-        return this.send(CmdSrandmember, key, num).wait(castFn);
-    }
-    public sIsMember(key:string|Class_Buffer, member:any):boolean{
-        key=this._fix_prefix_any(key);
-        return this.send(CmdSismember, key, member).wait(castBool);
     }
     public sDiff(keys:Array<string|Class_Buffer>, castFn:Function=castStrs):any[]{
         keys=this._fix_prefix_any(keys);
@@ -1291,7 +1315,9 @@ export class Redis {
     public static castBigInt:(bufs:any)=>any;
     public static castBigInts:(bufs:any)=>any[];
 
+
     public static castJSON:(bufs:any)=>any;
+    public static castDate:(bufs:any)=>Date;
 }
 
 class OptEvent{
@@ -1667,9 +1693,25 @@ function castJSON(bufs):any {
             a[k]=v?JSON.parse(v.toString()):v;
         });
     }else{
-        bufs = JSON.parse(bufs.toString());
+        bufs = bufs==null?null:JSON.parse(bufs.toString());
     }
     return bufs;
+}
+function castDate(buf:any):Date {
+    if(util.isBuffer(buf)){
+        var s=buf.toString(),t=Date.parse(s);
+        if(Number.isNaN(t)){
+            if(s.length>8 && s.length<15){
+                t=Number(s);
+                if(!Number.isNaN(t)){//unixtime timemillon, [1874->5138]
+                    return new Date(s.length>11 ? t:t*1000);
+                }
+            }
+        }else{
+            return new Date(t);
+        }
+    }
+    return null;
 }
 Redis["castAuto"]=castAuto;
 Redis["castStr"]=castStr;
@@ -1680,6 +1722,8 @@ Redis["castBigInt"]=castBigInt;
 Redis["castBigInts"]=castBigInts;
 Redis["castBool"]=castBool;
 Redis["castJSON"]=castJSON;
+Redis["castDate"]=castDate;
+
 
 const CODEC = 'utf8';
 const CHAR_Star   = Buffer.from('*', CODEC);
