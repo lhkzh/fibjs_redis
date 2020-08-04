@@ -1738,9 +1738,11 @@ function castAuto(a:any):any{
     if(util.isBoolean(a))return a;
     if(Buffer.isBuffer(a)){
         a=a.toString();
-        var n=Number(a);
-        if(!isNaN(n)){
-            return n;
+        if(a.length>0){
+            var n=Number(a);
+            if(!isNaN(n)){
+                return n;
+            }
         }
         return a;
     }

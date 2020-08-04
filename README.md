@@ -2,7 +2,7 @@
 fibjs redis
 
  使用fibjs实现的Redis客户端。  
-支持 pipeline、mult/exec、pub/sub、以及redis4.0的api。  
+支持 pipeline、mult/exec、pub/sub、script、以及redis4.0的api。  
 使用注意：以下情况禁止使用公共的Redis对象  
  1. block系列api（blpop...）会阻塞  
  2. mult/exec 这个api开启后其他Fiber调用命令也会乱入  
@@ -40,5 +40,6 @@ var arr=redis.pipeline(pipe=>{
 });  
 console.log(typeof arr, ...arr);  
 
-
+redis-lua  
+console.log(redis.eval('return {KEYS[1],ARGV[1],KEYS[2],ARGV[2]}',['a','b'],['aa','bb']))  
 
