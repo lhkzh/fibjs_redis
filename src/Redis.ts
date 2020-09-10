@@ -597,6 +597,10 @@ export class Redis {
         key=this._fix_prefix_any(key);
         return this._tmp_send(CmdDecr,key)._wait(castFn);
     }
+    public incrByFloat(key:string|Class_Buffer, step:number, castFn:Function=castNumber):number{
+        key=this._fix_prefix_any(key);
+        return this._tmp_send(CmdIncrByFloat,key,step)._wait(castFn);
+    }
     public incrBy(key:string|Class_Buffer, step:number, castFn:Function=castNumber):number{
         key=this._fix_prefix_any(key);
         return this._tmp_send(CmdIncrBy,key,step)._wait(castFn);
@@ -730,9 +734,7 @@ export class Redis {
     }
 
     protected _pre_block(){
-        if(this._sub_backs){
-            throw new RedisError("in_subscribe_context");
-        }
+        this._assert_normal();
     }
 
     public lPush(key:string|Class_Buffer, ...vals):number{
@@ -870,7 +872,7 @@ export class Redis {
         for(var k in hashObj){
             args.push(k, hashObj[k]);
         }
-        return this._tmp_send(...args)._wait(castBool);
+        return args.length>2 ? this._tmp_send(...args)._wait(castBool):false;
     }
     public hMGet(key:string|Class_Buffer, fields:Array<string|Class_Buffer|number>, castFn:Function=castStrs):any[]{
         key=this._fix_prefix_any(key);
@@ -929,7 +931,7 @@ export class Redis {
      */
     public sIsmember(key:string|Class_Buffer, member:any):boolean{
         return this.sIsmember(key, member);
-    }
+    }    
     public sDiff(keys:Array<string|Class_Buffer>, castFn:Function=castStrs):any[]{
         keys=this._fix_prefix_any(keys);
         return this._tmp_send(CmdSdiff, ...keys)._wait(castFn);
@@ -1741,6 +1743,9 @@ function castAuto(a:any):any{
         if(a.length>0){
             var n=Number(a);
             if(!isNaN(n)){
+                if(Number.isInteger(n) && !Number.isSafeInteger(n)){
+                    return BigInt(a);
+                }
                 return n;
             }
         }
@@ -1878,6 +1883,7 @@ const CmdDecr=Buffer.from('decr');
 const CmdIncr=Buffer.from('incr');
 const CmdDecrBy=Buffer.from('decrby');
 const CmdIncrBy=Buffer.from('incrby');
+const CmdIncrByFloat=Buffer.from('incrbyfloat');
 
 const CmdLpush=Buffer.from('lpush');
 const CmdLpushx=Buffer.from('lpushx');
