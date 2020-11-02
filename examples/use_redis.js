@@ -52,8 +52,8 @@ console.log('sadd', r.sAdd('fset',"a","b","c",0,1,2,3,4,5)==9);
 console.log('srem',r.sRem('fset',["a","b","c"])==3);
 console.log("scard",r.sCard('fset')==6);
 console.log("smembers",r.sMembers('fset').length==6);
-console.log("sIsmember",r.sIsmember('fset',"a")==false);
-console.log("sIsmember",r.sIsmember('fset',"1")==true);
+console.log("sIsMember",r.sIsMember('fset',"a")==false);
+console.log("sIsMember",r.sIsMember('fset',"1")==true);
 console.log("spop",r.sPop('fset',1)!=null,r.sPopOne("fset_nil")==null,r.sPop("fset_nil").length==0);
 console.log("sscan",r.sscan("fset","0","*",100))
 r.del('fset');
