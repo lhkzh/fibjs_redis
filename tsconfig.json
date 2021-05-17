@@ -1,17 +1,21 @@
 {
   "compilerOptions": {
     "module": "commonjs",
-    "target": "es6",
+    "target": "es2018",
     "sourceMap": false,
     "strict": false,
     "alwaysStrict": true,
     "watch":false,
     "outDir": "lib/",
     "experimentalDecorators":true,
-    "emitDecoratorMetadata":true
+    "emitDecoratorMetadata":true,
+    "declaration": true,
+    "declarationDir": "@types",
+    "removeComments": false
   },
   "exclude": [
     "dist",
-    "node_modules"
+    "node_modules",
+    "@types"
   ]
 }
