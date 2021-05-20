@@ -342,8 +342,10 @@ export declare class Redis extends EventEmitter {
     xGroupSetid(key: string, group: string, id: string | number): any;
     xReadGroup(group: string, consumer: string, streamOptions: {
         [index: string]: string | number;
-    }, count?: number): any[];
-    xRead(streamKeys: string[], ids?: any[], count?: number): any[];
+    }, count?: number, blockMillon?: number): any[];
+    xRead(keyIds: {
+        [index: string]: string | number;
+    }, count?: number, blockMillon?: number): any[];
     xAck(key: string, ...ids: any[]): number;
     xPending(key: string, group: string, limit?: {
         start: string | number;

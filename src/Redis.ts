@@ -1644,8 +1644,12 @@ export class Redis extends EventEmitter{
         return this._tmp_send(CmdXGROUP, "SETID", key, group, id)._wait(castAuto);
     }
 
-    public xReadGroup(group: string, consumer:string, streamOptions:{[index:string]:string|number}, count?:number):any[]{
+    public xReadGroup(group: string, consumer:string, streamOptions:{[index:string]:string|number}, count?:number,blockMillon?:number):any[]{
         let args:any[] = [CmdXREADGROUP, "GROUP", group, consumer];
+        if(Number.isInteger(blockMillon)){
+            args.push("BLOCK", blockMillon);
+            this._pre_block();
+        }
         if(Number.isInteger(count)){
             args.push("COUNT", count);
         }
@@ -1655,18 +1659,18 @@ export class Redis extends EventEmitter{
         }
         return this._tmp_send(...args)._wait(castAuto);
     }
-    public xRead(streamKeys:string[], ids?:any[], count?:number):any[]{
+    public xRead(keyIds:{[index:string]:string|number}, count?:number,blockMillon?:number):any[]{
         let args:any[] = [CmdXREAD];
+        if(Number.isInteger(blockMillon)){
+            args.push("BLOCK", blockMillon);
+            this._pre_block();
+        }
         if(Number.isInteger(count)){
             args.push("COUNT", count);
         }
-        if(!ids){
-            ids = [].fill(0,0,streamKeys.length);
-        }
-        args.push("STREAMS", ...streamKeys, ...ids);
+        args.push("STREAMS", ...Object.keys(keyIds), ...Object.values(keyIds));
         return this._tmp_send(...args)._wait(castAuto);
     }
-
     public xAck(key: string, ...ids): number {
         return this._tmp_send(CmdXACK, key, "group", ...ids)._wait(castNumber);
     }
