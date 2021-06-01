@@ -77,6 +77,7 @@ export class Redis extends EventEmitter{
         this._sendEvt = new coroutine.Event(false);
         this._connectLock = new coroutine.Semaphore(1);
         let self = this;
+        self._backs = [];
         self._state = SockStat.INIT;
         if (openConnType == 2) {
             self._state = SockStat.CONNECTING;
@@ -125,7 +126,7 @@ export class Redis extends EventEmitter{
                 return;
             }
             this._state = SockStat.CONNECTING;
-            var sock = new net.Socket();
+            var sock = new net.Socket(net.AF_INET);
             let opts = this._opts;
             sock.timeout = opts.timeout;
             sock.connect(opts.host, opts.port);
@@ -134,7 +135,7 @@ export class Redis extends EventEmitter{
             opts.auth && this._pre_command(sock, buf, 'auth', opts.auth);
             opts.db > 0 && this._pre_command(sock, buf, 'select', opts.db);
             this._socket = sock;
-            this._backs = [];
+            // this._backs = [];
             this._state = SockStat.OPEN;
             this._pre_Fibers();
             this._pre_sub_onConnect();
@@ -188,7 +189,8 @@ export class Redis extends EventEmitter{
             replyError: err => {
                 // err=String(err); return err.includes("NOAUTH") || err.includes("rpc");
                 // return String(err).includes("wrong number")==false;//除了参数不对，全部认为是致命错误
-                if (String(err).includes("wrong number") == false) {
+                let err_str = String(err);
+                if (err_str.includes("wrong number") == false && err_str.includes(" script")) {
                     console.error("Redis|on_reply_error|1", local_port, err);
                     T._on_err(err, true);
                     return;
