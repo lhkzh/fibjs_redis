@@ -136,12 +136,10 @@ export class Redis extends EventEmitter{
             opts.db > 0 && this._pre_command(sock, buf, 'select', opts.db);
             this._socket = sock;
             // this._backs = [];
-            this._state = SockStat.OPEN;
             this._pre_Fibers();
             this._pre_sub_onConnect();
-            this._onOpen.set();
             this._reader.run();
-            this.emit(RedisEvent.onOpen);
+            this._state = SockStat.OPEN;
         } catch (e) {
             this._state = SockStat.CLOSED;
             try {
@@ -152,6 +150,8 @@ export class Redis extends EventEmitter{
         } finally {
             this._connectLock.release();
         }
+        this._onOpen.set();
+        this.emit(RedisEvent.onOpen);
         return this;
     }
 
@@ -299,18 +299,21 @@ export class Redis extends EventEmitter{
             while (this._state != SockStat.OPEN && !this._killed) {
                 try {
                     this._do_conn();
-                    return;
                 } catch (e) {
                     console.error("Redis|auto_reconn", i, this._opts.host + ":" + this._opts.port, e);
                     try {
-                        this._socket.close();
+                        this._socket && this._socket.close();
                     } catch (e) {
                     }
                 }
+                if(this._state==SockStat.OPEN){
+                    break;
+                }
                 this._state = SockStat.CONNECTING;
                 i++;
-                coroutine.sleep(Math.min(i * 5, 500));
+                coroutine.sleep(Math.min(i * 2, 20));
             }
+            this._reconIng = false;
         }
     }
 
