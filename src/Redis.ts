@@ -86,6 +86,7 @@ export class Redis extends EventEmitter {
                 while (!self._killed) {
                     try {
                         self.connect();
+                        break;
                     } catch (e) {
                         coroutine.sleep(1);
                     }
@@ -323,6 +324,9 @@ export class Redis extends EventEmitter {
                 }
                 this._state = SockStat.CONNECTING;
                 i++;
+                if (i % 10 == 0) {
+                    this._onOpen.pulse();
+                }
                 coroutine.sleep(Math.min(i * 2, 20));
             }
             this._reconIng = false;
