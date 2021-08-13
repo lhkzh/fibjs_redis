@@ -324,10 +324,10 @@ export class Redis extends EventEmitter {
                 }
                 this._state = SockStat.CONNECTING;
                 i++;
-                if (i % 10 == 0) {
+                if (i % 3 == 0) {
                     this._onOpen.pulse();
                 }
-                coroutine.sleep(Math.min(i * 2, 20));
+                coroutine.sleep(Math.min(i * 2, 10));
             }
             this._reconIng = false;
         }
