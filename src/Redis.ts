@@ -29,18 +29,19 @@ class SockStat {
 /**
  * 相关事件
  */
-export let RedisEvent={
-    onOpen:"onOpen",
-    onLost:"onLost",
-    onClose:"onClose"
+export let RedisEvent = {
+    onOpen: "onOpen",
+    onLost: "onLost",
+    onClose: "onClose"
 };
+
 /**RedisError
  * Redis client
  * "redis://127.0.0.1:6379"
  * "redis://authpwd@127.0.0.1:6379?db=1&prefix=XX:"
  * "redis://127.0.0.1:6379?db=1&prefix=XX:&auth=authpwd"
  */
-export class Redis extends EventEmitter{
+export class Redis extends EventEmitter {
     protected _waitReconnect = true;//发送指令时,如果在重连中是否等待重连
     protected _prefix: { str: string, buf: Class_Buffer } = {str: "", buf: null};
     private _opts: RedisConfig;
@@ -61,13 +62,13 @@ export class Redis extends EventEmitter{
     private _sendEvt: Class_Event;
 
     /**
-     * 
+     *
      * @param conf 配置
      * @param openConnType 构造函数中打开接方式：0-不进行连接，1-当前fiber连接，2-新fiber连接
      */
-    constructor(conf: RedisConfig | string = "redis://127.0.0.1:6379", openConnType:0|1|2 = 1) {
+    constructor(conf: RedisConfig | string = "redis://127.0.0.1:6379", openConnType: 0 | 1 | 2 = 1) {
         super();
-        if (conf === null){
+        if (conf === null) {
             return;
         }
         this._opts = util.isString(conf) ? uriToConfig(conf + "") : <RedisConfig>conf;
@@ -82,7 +83,13 @@ export class Redis extends EventEmitter{
         if (openConnType == 2) {
             self._state = SockStat.CONNECTING;
             coroutine.start(() => {
-                self.connect();
+                while (!self._killed) {
+                    try {
+                        self.connect();
+                    } catch (e) {
+                        coroutine.sleep(1);
+                    }
+                }
             });
         } else if (openConnType == 1) {
             self.connect();
@@ -90,7 +97,13 @@ export class Redis extends EventEmitter{
     }
 
     public connect() {
-        return this._do_conn();
+        try {
+            return this._do_conn();
+        } catch (e) {
+            console.error("redis_connect_err: %s:%d %s", this._opts.host, this._opts.port, e.message)
+            this._onOpen.pulse();
+            throw e;
+        }
     }
 
     /**
@@ -150,7 +163,7 @@ export class Redis extends EventEmitter{
         } finally {
             this._connectLock.release();
         }
-        this._onOpen.set();
+        this._onOpen.pulse();
         this.emit(RedisEvent.onOpen);
         return this;
     }
@@ -240,7 +253,7 @@ export class Redis extends EventEmitter{
     }
 
     private _on_err(e, deadErr?: boolean) {
-        console.error("Redis|_on_err|%s", this._opts.host + ":" + this._opts.port + "="+this._state, e);
+        console.error("Redis|_on_err|%s", this._opts.host + ":" + this._opts.port + "=" + this._state, e);
         if (this._socket == null || (this._state != SockStat.OPEN && this._state != SockStat.CONNECTING)) {
             console.error("Redis|_on_err|return");
             return;
@@ -250,7 +263,7 @@ export class Redis extends EventEmitter{
         this._try_auto_reconn();
     }
 
-    private _try_drop_cbks(e, isClose=false) {
+    private _try_drop_cbks(e, isClose = false) {
         var backs = this._backs, sub_backs = this._sub_backs;
         this._backs = [];
         this._sub_backs = null;
@@ -271,7 +284,7 @@ export class Redis extends EventEmitter{
         this._backs = [];
         this._sub_backs = null;
         this._mult_backs = null;
-        this.emit(isClose ? RedisEvent.onClose:RedisEvent.onLost);
+        this.emit(isClose ? RedisEvent.onClose : RedisEvent.onLost);
     }
 
     private _try_drop_worker() {
@@ -284,8 +297,7 @@ export class Redis extends EventEmitter{
                 this._socket.close();
             } catch (e) {
             }
-            this._onOpen.set();
-            this._onOpen.clear();
+            this._onOpen.pulse();
         } catch (e) {
         }
     }
@@ -306,7 +318,7 @@ export class Redis extends EventEmitter{
                     } catch (e) {
                     }
                 }
-                if(this._state==SockStat.OPEN){
+                if (this._state == SockStat.OPEN) {
                     break;
                 }
                 this._state = SockStat.CONNECTING;
@@ -320,7 +332,7 @@ export class Redis extends EventEmitter{
     public close() {
         this._killed = true;
         this._state = SockStat.CLOSED;
-        var sock = this._socket;
+        let sock = this._socket;
         this._try_drop_worker();
         this._socket = null;
         try {
@@ -1586,118 +1598,134 @@ export class Redis extends EventEmitter{
     public xlen(key: string): number {
         return this._tmp_send(CmdXLEN, key)._wait(castNumber);
     }
-    public xAdd(key: string, idOption:string|number, ...kvs): string {
-        if(Number.isInteger(<any>idOption)){
+
+    public xAdd(key: string, idOption: string | number, ...kvs): string {
+        if (Number.isInteger(<any>idOption)) {
             return this._tmp_send(CmdXADD, key, idOption, ...kvs)._wait(castStr);
         }
         return this._tmp_send(CmdXADD, key, ...String(idOption).split(" "), ...kvs)._wait(castStr);
     }
-    public xDel(key: string, ...ids): number{
+
+    public xDel(key: string, ...ids): number {
         return this._tmp_send(CmdXDEL, ...ids)._wait(castNumber);
     }
-    public xRange(key: string, start:string|number, end:string|number, countLimit?:number):Array<any>{
-        let t =  countLimit ? this._tmp_send(CmdXRANGE, key, start, end, "COUNT", countLimit):
+
+    public xRange(key: string, start: string | number, end: string | number, countLimit?: number): Array<any> {
+        let t = countLimit ? this._tmp_send(CmdXRANGE, key, start, end, "COUNT", countLimit) :
             this._tmp_send(CmdXRANGE, key, start, end);
         return t._wait(deepCastStrs);
     }
-    public xRangeWrap(key: string, start:string|number, end:string|number, countLimit?:number):Array<{id:string, items:Array<{k:string,v:string}>}>{
+
+    public xRangeWrap(key: string, start: string | number, end: string | number, countLimit?: number): Array<{ id: string, items: Array<{ k: string, v: string }> }> {
         let r = this.xRange(key, start, end, countLimit);
         return this._xRangeRspWrap(r);
     }
-    public xRevRange(key: string, start:string|number, end:string|number, countLimit?:number):Array<any>{
-        let t =  countLimit ? this._tmp_send(CmdXREVRANGE, key, start, end, "COUNT", countLimit):
+
+    public xRevRange(key: string, start: string | number, end: string | number, countLimit?: number): Array<any> {
+        let t = countLimit ? this._tmp_send(CmdXREVRANGE, key, start, end, "COUNT", countLimit) :
             this._tmp_send(CmdXREVRANGE, key, start, end);
         return t._wait(deepCastStrs);
     }
-    public xRevRangeWrap(key: string, start:string|number, end:string|number, countLimit?:number):Array<{id:string, items:Array<{k:string,v:string}>}>{
+
+    public xRevRangeWrap(key: string, start: string | number, end: string | number, countLimit?: number): Array<{ id: string, items: Array<{ k: string, v: string }> }> {
         let r = this.xRevRange(key, start, end, countLimit);
         return this._xRangeRspWrap(r);
     }
-    private _xRangeRspWrap(r){
-        for(var i=0; i<r.length; i++){
-            var id = r[i][0], vs=r[i][1], es=[];
-            for(var j=0; j<vs.length; j+=2){
-                es.push({k:vs[j], v:vs[j+1]});
+
+    private _xRangeRspWrap(r) {
+        for (var i = 0; i < r.length; i++) {
+            var id = r[i][0], vs = r[i][1], es = [];
+            for (var j = 0; j < vs.length; j += 2) {
+                es.push({k: vs[j], v: vs[j + 1]});
             }
-            r[i] = {id:id, items:es};
+            r[i] = {id: id, items: es};
         }
         return <any>r;
     }
-    public xTrimMaxlen(key: string, count: number, fast?:boolean){
-        return (fast ? this._tmp_send(CmdXTRIM, key, "MAXLEN", '~', count):this._tmp_send(CmdXTRIM, key, "MAXLEN", count))._wait(castNumber);
+
+    public xTrimMaxlen(key: string, count: number, fast?: boolean) {
+        return (fast ? this._tmp_send(CmdXTRIM, key, "MAXLEN", '~', count) : this._tmp_send(CmdXTRIM, key, "MAXLEN", count))._wait(castNumber);
     }
-    public xInfoGroups(key: string):Array<{[index:string]:number}>{
+
+    public xInfoGroups(key: string): Array<{ [index: string]: number }> {
         return this._tmp_send(CmdXINFO, "GROUPS", key)._wait(castXInfo);
     }
-    public xInfoConsumers(key: string, group: string):Array<{[index:string]:number}>{
+
+    public xInfoConsumers(key: string, group: string): Array<{ [index: string]: number }> {
         return this._tmp_send(CmdXINFO, "CONSUMERS", key, group)._wait(castXInfo);
     }
-    public xInfoStream(key: string):{[index:string]:number|{id:string,k:string,v:string}}{
+
+    public xInfoStream(key: string): { [index: string]: number | { id: string, k: string, v: string } } {
         return this._tmp_send(CmdXINFO, "STREAM", key)._wait(castXInfo);
     }
 
-    public xGroupCreate(key: string, group: string, id:string|number){
+    public xGroupCreate(key: string, group: string, id: string | number) {
         return this._tmp_send(CmdXGROUP, "CREATE", key, group, id)._wait(castBool);
     }
-    public xGroupDestroy(key: string, group: string){
+
+    public xGroupDestroy(key: string, group: string) {
         return this._tmp_send(CmdXGROUP, "DESTROY", key, group)._wait(castBool);
     }
-    public xGroupDelconsumer(key: string, group: string, consumer: string){
+
+    public xGroupDelconsumer(key: string, group: string, consumer: string) {
         return this._tmp_send(CmdXGROUP, "DELCONSUMER", key, group, consumer)._wait(castAuto);
     }
-    public xGroupSetid(key: string, group: string, id: string|number){
+
+    public xGroupSetid(key: string, group: string, id: string | number) {
         return this._tmp_send(CmdXGROUP, "SETID", key, group, id)._wait(castAuto);
     }
 
-    public xReadGroup(group: string, consumer:string, streamOptions:{[index:string]:string|number}, count?:number,blockMillon?:number):any[]{
-        let args:any[] = [CmdXREADGROUP, "GROUP", group, consumer];
-        if(Number.isInteger(blockMillon)){
+    public xReadGroup(group: string, consumer: string, streamOptions: { [index: string]: string | number }, count?: number, blockMillon?: number): any[] {
+        let args: any[] = [CmdXREADGROUP, "GROUP", group, consumer];
+        if (Number.isInteger(blockMillon)) {
             args.push("BLOCK", blockMillon);
             this._pre_block();
         }
-        if(Number.isInteger(count)){
+        if (Number.isInteger(count)) {
             args.push("COUNT", count);
         }
         args.push("STREAMS");
-        for(var k in streamOptions){
+        for (var k in streamOptions) {
             args.push(k, streamOptions[k]);
         }
         return this._tmp_send(...args)._wait(castAuto);
     }
-    public xRead(keyIds:{[index:string]:string|number}, count?:number,blockMillon?:number):any[]{
-        let args:any[] = [CmdXREAD];
-        if(Number.isInteger(blockMillon)){
+
+    public xRead(keyIds: { [index: string]: string | number }, count?: number, blockMillon?: number): any[] {
+        let args: any[] = [CmdXREAD];
+        if (Number.isInteger(blockMillon)) {
             args.push("BLOCK", blockMillon);
             this._pre_block();
         }
-        if(Number.isInteger(count)){
+        if (Number.isInteger(count)) {
             args.push("COUNT", count);
         }
         args.push("STREAMS", ...Object.keys(keyIds), ...Object.values(keyIds));
         return this._tmp_send(...args)._wait(castAuto);
     }
+
     public xAck(key: string, ...ids): number {
         return this._tmp_send(CmdXACK, key, "group", ...ids)._wait(castNumber);
     }
 
-    public xPending(key: string, group: string, limit?:{start:string|number, end:string|number, count:number}, consumer?:string):Array<any>{
-        let args:any[] = [CmdXPENDING, key, group];
-        if(limit){
+    public xPending(key: string, group: string, limit?: { start: string | number, end: string | number, count: number }, consumer?: string): Array<any> {
+        let args: any[] = [CmdXPENDING, key, group];
+        if (limit) {
             args.push(limit.start, limit.end, limit.count);
         }
-        if(consumer){
+        if (consumer) {
             args.push(consumer);
         }
         return this._tmp_send(...args)._wait(castAuto);
     }
 
-    public xClaim(key: string, group:string, consumer:string, minIdelTimes:number, ids:string[], options?:any){
+    public xClaim(key: string, group: string, consumer: string, minIdelTimes: number, ids: string[], options?: any) {
         let args = [CmdXCLAIM, key, group, consumer, minIdelTimes, ...ids];
-        if(options){
-            for(var k in options){
-                if(options[k]){
+        if (options) {
+            for (var k in options) {
+                if (options[k]) {
                     args.push(k, options[k]);
-                }else{
+                } else {
                     args.push(k);
                 }
             }
@@ -1953,7 +1981,7 @@ class RespReader {
     }
 
     private readMult(reader: Class_BufferedStream, len: number, opt: { err?: string, lost?: boolean }) {
-        if(len<0){
+        if (len < 0) {
             return null;
         }
         let arr = new Array(len), subLine: string, subRaw, subLine0: string;
@@ -2123,28 +2151,29 @@ function deepCastStrs(r: Array<any>): string[] {
     }
     return r;
 }
+
 function castXInfo(bufs): any {
     var rsp = {};
     if (bufs.length) {
-        if(Array.isArray(bufs[0])){
+        if (Array.isArray(bufs[0])) {
             rsp = [];
-            for(var i=0; i<bufs.length; i++){
+            for (var i = 0; i < bufs.length; i++) {
                 (<any>rsp).push(castXInfo(bufs[i]));
             }
-        }else{
-            for(var i=0; i<bufs.length; i+=2){
+        } else {
+            for (var i = 0; i < bufs.length; i += 2) {
                 var k = bufs[i].toString();
-                if(Array.isArray(bufs[i+1])){
-                    var es = bufs[i+1];
+                if (Array.isArray(bufs[i + 1])) {
+                    var es = bufs[i + 1];
                     var eid = es[0].toString();
                     var ek = es[1][0].toString();
                     var ev = es[1][1].toString();
-                    rsp[k] = {id:eid, k:ek, v:ev};
-                }else{
-                    var v=bufs[i + 1].toString();
+                    rsp[k] = {id: eid, k: ek, v: ev};
+                } else {
+                    var v = bufs[i + 1].toString();
                     rsp[k] = Number(v);
-                    if(Number.isNaN(rsp[k])){
-                        rsp[k]=v;
+                    if (Number.isNaN(rsp[k])) {
+                        rsp[k] = v;
                     }
                 }
             }
@@ -2152,6 +2181,7 @@ function castXInfo(bufs): any {
     }
     return rsp;
 }
+
 function castNumber(buf: any): number {
     if (!Number.isFinite(buf)) {
         buf = Number(buf.toString());
