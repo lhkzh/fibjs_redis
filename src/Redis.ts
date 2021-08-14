@@ -9,16 +9,29 @@ import * as io from "io";
 import * as QueryString from "querystring";
 import * as url from "url";
 
+/**
+ * redis连接配置
+ */
 export interface RedisConfig {
     host: string,
     port: number,
+    //连接成功后，授权认证配置
     auth?: string,
+    //连接成功后，选择的db
     db: number,
+    //socket连接超时（单位秒）
     timeout: number,
+    //意外断开后，是否自动重连
     autoReconnect: boolean,
+    //操作key时追加的前缀
     prefix?: string,
+    //等待打开连接或者重连的次数
+    waitOpen?: number
 }
 
+/**
+ * redis连接状态
+ */
 class SockStat {
     public static INIT = 0;
     public static CONNECTING = 1;
@@ -93,17 +106,57 @@ export class Redis extends EventEmitter {
                 }
             });
         } else if (openConnType == 1) {
-            self.connect();
+            for (let i = 0; i < 3; i++) {
+                try {
+                    self.connect();
+                    break;
+                } catch (e) {
+                }
+            }
         }
     }
 
+    /**
+     * 返回当前组件的内部状态 {alive:是否没主动close, state:连接状态, backs:等待返回的长度, }
+     */
+    public toStatJson() {
+        let subpbs = 0;
+        if (this._subFn) {
+            Object.values(this._subFn).forEach(a => subpbs += a.length);
+        }
+        if (this._psubFn) {
+            Object.values(this._psubFn).forEach(a => subpbs += a.length);
+        }
+        return {
+            alive: (!this._killed),
+            state: this._state,
+            wait: {
+                normal: this._backs ? this._backs.length + (this._sub_backs ? this._sub_backs.length : 0) : 0,
+                mult: this._mult_backs ? this._mult_backs.length : 0,
+                sub: subpbs
+            },
+            bs: this._sendBufs.length
+        };
+    }
+
+    /**
+     * 进行连接（如果已连接直接返回）
+     */
     public connect() {
-        try {
+        if (this._killed) {
+            throw new Error("this redis object had killed(destoryed)");
+        }
+        if (!this._killed && !this._reconIng) {
             return this._do_conn();
-        } catch (e) {
-            console.error("redis_connect_err: %s:%d %s", this._opts.host, this._opts.port, e.message)
+        }
+        return this;
+    }
+
+    private _on_open_fail(e) {
+        if (this._opts.waitOpen > 0) {
+
+        } else {
             this._onOpen.pulse();
-            throw e;
         }
     }
 
@@ -160,6 +213,8 @@ export class Redis extends EventEmitter {
                 sock.close();
             } catch (e2) {
             }
+            console.error("redis_connect_err: %s:%d %s", this._opts.host, this._opts.port, e.message);
+            this._on_open_fail(e);
             throw e;
         } finally {
             this._connectLock.release();
@@ -324,15 +379,15 @@ export class Redis extends EventEmitter {
                 }
                 this._state = SockStat.CONNECTING;
                 i++;
-                if (i % 3 == 0) {
-                    this._onOpen.pulse();
-                }
                 coroutine.sleep(Math.min(i * 2, 10));
             }
             this._reconIng = false;
         }
     }
 
+    /**
+     * 主动关闭连接，销毁组件
+     */
     public close() {
         this._killed = true;
         this._state = SockStat.CLOSED;
@@ -354,12 +409,19 @@ export class Redis extends EventEmitter {
         if (this._killed) {
             throw new RedisError("io_had_closed");
         }
-        if (this._state == SockStat.CONNECTING) {
-            this._onOpen.wait();//等待链接
-        }
-        if (this._state != SockStat.OPEN) {
-            throw new RedisError("io_error");
-        }
+        let _wait_num = this._opts.waitOpen > 0 ? Math.min(this._opts.waitOpen, 999) : 0;
+        do {
+            if (this._state == SockStat.CONNECTING) {
+                this._onOpen.wait();//等待链接
+            }
+            if (this._state == SockStat.OPEN) {
+                break;
+            } else {
+                _wait_num--;
+                if (_wait_num < 0)
+                    throw new RedisError("io_error");
+            }
+        } while (true);
     }
 
     protected _temp_cmds: Class_Buffer[] = [];
@@ -386,23 +448,36 @@ export class Redis extends EventEmitter {
         return evt.wait(convert);
     }
 
+    /**
+     * 发送命令
+     * @param cmd
+     * @param args
+     */
     public rawCommand(cmd: string, ...args): any {
         // console.log("...>",cmd,...args);
         return this._tmp_send(...arguments)._wait();
     }
 
+    /**
+     * 发送ping命令
+     */
     public ping(): string {
         return this._tmp_send(CmdPing)._wait(castStr);
     }
 
+    /**
+     * 发送quit命令并主动关闭组件
+     */
     public quit(): boolean {
-        var t = this._tmp_send(CmdQuit);
-        t._killed = true;
-        try {
-            t._wait(castBool);
-        } catch (e) {
-        } finally {
-            t.close();
+        if (this._state == SockStat.OPEN) {
+            let t = this._tmp_send(CmdQuit);
+            t._killed = true;
+            try {
+                t._wait(castBool);
+            } catch (e) {
+            } finally {
+                t.close();
+            }
         }
         return true;
     }
@@ -2067,6 +2142,7 @@ function uriToConfig(uri: string): RedisConfig {
     var initDb = 0;
     var autoReconnect = true;
     var prefix = null;
+    var waitOpen = 0;
     if (urlObj.query.length > 0) {
         var query: any = QueryString.parse(urlObj.query);
         if (query.db && parseInt(query.db) > 0 && parseInt(query.db) <= 16) {
@@ -2085,6 +2161,9 @@ function uriToConfig(uri: string): RedisConfig {
         if (query.prefix) {
             prefix = String(query.prefix).trim();
         }
+        if (query.waitOpen) {
+            waitOpen = Number(query.waitOpen);
+        }
     }
     return {
         db: initDb,
@@ -2093,7 +2172,8 @@ function uriToConfig(uri: string): RedisConfig {
         auth: auth,
         host: host,
         port: port,
-        prefix: prefix
+        prefix: prefix,
+        waitOpen: waitOpen >= 0 ? waitOpen : 0
     };
 }
 

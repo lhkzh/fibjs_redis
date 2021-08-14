@@ -3,6 +3,9 @@
  * redis-客户端类
  */
 import { EventEmitter } from "events";
+/**
+ * redis连接配置
+ */
 export interface RedisConfig {
     host: string;
     port: number;
@@ -11,6 +14,16 @@ export interface RedisConfig {
     timeout: number;
     autoReconnect: boolean;
     prefix?: string;
+    waitOpen?: number;
+}
+/**
+ * redis连接状态
+ */
+declare class SockStat {
+    static INIT: number;
+    static CONNECTING: number;
+    static OPEN: number;
+    static CLOSED: number;
 }
 /**
  * 相关事件
@@ -54,7 +67,24 @@ export declare class Redis extends EventEmitter {
      * @param openConnType 构造函数中打开接方式：0-不进行连接，1-当前fiber连接，2-新fiber连接
      */
     constructor(conf?: RedisConfig | string, openConnType?: 0 | 1 | 2);
+    /**
+     * 返回当前组件的内部状态 {alive:是否没主动close, state:连接状态, backs:等待返回的长度, }
+     */
+    toStatJson(): {
+        alive: boolean;
+        state: SockStat;
+        wait: {
+            normal: number;
+            mult: number;
+            sub: number;
+        };
+        bs: number;
+    };
+    /**
+     * 进行连接（如果已连接直接返回）
+     */
     connect(): this;
+    private _on_open_fail;
     /**
      * 发送指令时,如果在重连中是否等待重连【默认为true】，需要配合配置【autoReconnect】一同生效
      */
@@ -73,14 +103,28 @@ export declare class Redis extends EventEmitter {
     private _try_drop_cbks;
     private _try_drop_worker;
     private _try_auto_reconn;
+    /**
+     * 主动关闭连接，销毁组件
+     */
     close(): void;
     protected _is_in_pipeline(): boolean;
     protected _before_send(): void;
     protected _temp_cmds: Class_Buffer[];
     protected _tmp_send(...args: any[]): this;
     protected _wait(convert?: any): any;
+    /**
+     * 发送命令
+     * @param cmd
+     * @param args
+     */
     rawCommand(cmd: string, ...args: any[]): any;
+    /**
+     * 发送ping命令
+     */
     ping(): string;
+    /**
+     * 发送quit命令并主动关闭组件
+     */
     quit(): boolean;
     echo(s: string): string;
     eval(script: any, keys: any[], args?: any[], castFn?: typeof castAuto): any;
