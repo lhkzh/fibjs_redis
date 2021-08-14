@@ -45,7 +45,8 @@ class SockStat {
 export let RedisEvent = {
     onOpen: "onOpen",
     onLost: "onLost",
-    onClose: "onClose"
+    onClose: "onClose",
+    onError: "onError",
 };
 
 /**RedisError
@@ -153,11 +154,8 @@ export class Redis extends EventEmitter {
     }
 
     private _on_open_fail(e) {
-        if (this._opts.waitOpen > 0) {
-
-        } else {
-            this._onOpen.pulse();
-        }
+        this._onOpen.pulse();
+        this.emit(RedisEvent.onError, "io_error");
     }
 
     /**
@@ -317,6 +315,7 @@ export class Redis extends EventEmitter {
         this._try_drop_worker();
         this._try_drop_cbks(e);
         this._try_auto_reconn();
+        this.emit(RedisEvent.onError, String(e));
     }
 
     private _try_drop_cbks(e, isClose = false) {

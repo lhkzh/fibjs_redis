@@ -32,6 +32,7 @@ export declare let RedisEvent: {
     onOpen: string;
     onLost: string;
     onClose: string;
+    onError: string;
 };
 /**RedisError
  * Redis client
