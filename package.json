@@ -1,6 +1,6 @@
 {
   "name": "fibjs_redis",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "description": "fibjs redis client",
   "main": "./lib/index.js",
   "types": "./@types/index.d.ts",

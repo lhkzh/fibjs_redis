@@ -186,22 +186,21 @@ export class Redis extends EventEmitter {
 
     private _do_conn() {
         this._connectLock.acquire();
+        let opts = this._opts;
+        let sock = new net.Socket(net.AF_INET);
         try {
             if (this._state == SockStat.OPEN && this._socket) {
                 return;
             }
             this._state = SockStat.CONNECTING;
-            var sock = new net.Socket(net.AF_INET);
-            let opts = this._opts;
             sock.timeout = opts.timeout;
             sock.connect(opts.host, opts.port);
             sock.timeout = -1;
-            var buf = new io.BufferedStream(sock);
-            buf.EOL = "\r\n";
-            opts.auth && this._pre_command(sock, buf, 'auth', opts.auth);
-            opts.db > 0 && this._pre_command(sock, buf, 'select', opts.db);
+            let bufs = new io.BufferedStream(sock);
+            bufs.EOL = "\r\n";
+            opts.auth && this._pre_command(sock, bufs, 'auth', opts.auth);
+            opts.db > 0 && this._pre_command(sock, bufs, 'select', opts.db);
             this._socket = sock;
-            // this._backs = [];
             this._pre_Fibers();
             this._pre_sub_onConnect();
             this._reader.run();
@@ -218,8 +217,12 @@ export class Redis extends EventEmitter {
         } finally {
             this._connectLock.release();
         }
-        this._onOpen.pulse();
-        this.emit(RedisEvent.onOpen);
+        try {
+            this._onOpen.pulse();
+            this.emit(RedisEvent.onOpen);
+        } catch (e) {
+            console.error("redis_onopen_suc", e);
+        }
         return this;
     }
 
@@ -289,9 +292,8 @@ export class Redis extends EventEmitter {
     }
 
     private _pre_command(sock: Class_Socket, buf: Class_BufferedStream, ...args) {
-        // buf.write(commandToResp(args));
         buf.write(encodeCommand(args));
-        var str = buf.readLine();
+        let str = buf.readLine();
         if (str == null) {
             sock.close();
             throw new RedisError("io-err");
@@ -368,13 +370,13 @@ export class Redis extends EventEmitter {
                     this._do_conn();
                 } catch (e) {
                     console.error("Redis|auto_reconn", i, this._opts.host + ":" + this._opts.port, e);
-                    try {
-                        this._socket && this._socket.close();
-                    } catch (e) {
-                    }
                 }
                 if (this._state == SockStat.OPEN) {
                     break;
+                }
+                try {
+                    this._socket && this._socket.close();
+                } catch (e) {
                 }
                 this._state = SockStat.CONNECTING;
                 i++;
