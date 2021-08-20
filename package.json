@@ -1,22 +1,23 @@
 {
   "name": "fibjs_redis",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "description": "fibjs redis client",
   "main": "./lib/index.js",
   "types": "./@types/index.d.ts",
   "private": false,
   "author": "",
   "homepage": "https://github.com/lhkzh/fibjs_redis",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {},
   "devDependencies": {},
   "peerDependencies": {},
+  "engines": {
+    "fibjs": ">0.32.0"
+  },
   "files": [
     "package.json",
-    "tsconfig.json",
     "README.md",
     "@types",
-    "src",
     "lib"
   ],
   "keywords": [

@@ -195,6 +195,7 @@ export class Redis extends EventEmitter {
             let opts = this._opts;
             sock.timeout = opts.timeout;
             sock.connect(opts.host, opts.port);
+            sock.timeout = -1;
             var buf = new io.BufferedStream(sock);
             buf.EOL = "\r\n";
             opts.auth && this._pre_command(sock, buf, 'auth', opts.auth);
@@ -225,7 +226,6 @@ export class Redis extends EventEmitter {
     private _pre_Fibers() {
         let T = this;
         const local_port = T._socket.localPort;
-        T._socket.timeout = -1;
         T._sender = coroutine.start(() => {
             let sock = T._socket, buf: Class_Buffer;
             while (T._socket === sock && T._state == SockStat.OPEN) {
